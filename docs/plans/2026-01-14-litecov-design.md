@@ -1,0 +1,367 @@
+# LiteCov Design Document
+
+**Date:** 2026-01-14
+**Status:** Draft
+**Author:** Brainstorming session
+
+## Overview
+
+LiteCov is a self-hostable, super lightweight Codecov alternative. It's a serverless GitHub Action that parses coverage reports and posts PR comments with coverage statistics. Zero infrastructure required.
+
+**Target audience:** Hobby developers and small teams who need test coverage visibility without the complexity of self-hosting Codecov.
+
+## Goals
+
+1. **Zero infrastructure** - Works as a GitHub Action only, no server needed
+2. **Minimal setup** - One line in workflow file, no secrets to configure
+3. **Efficient** - Fast parsing, small binary, minimal resource usage
+4. **Beautiful** - Codecov-style PR comments that look professional
+
+## Non-Goals
+
+- Coverage history/trends (no storage)
+- Web dashboard
+- Badge generation
+- Cross-repo visibility
+- Branch protection integration (beyond commit status)
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    GitHub Actions                        │
+├─────────────────────────────────────────────────────────┤
+│                                                          │
+│  ┌──────────┐    ┌──────────┐    ┌──────────────────┐   │
+│  │ Test Job │───▶│ Coverage │───▶│ LiteCov Action   │   │
+│  │          │    │  File    │    │                  │   │
+│  └──────────┘    │ (LCOV/   │    │ 1. Parse report  │   │
+│                  │ Cobertura)│    │ 2. Get PR files  │   │
+│                  └──────────┘    │ 3. Calculate %   │   │
+│                                  │ 4. Post comment  │   │
+│                                  │ 5. Set status    │   │
+│                                  └──────────────────┘   │
+│                                           │              │
+│                                           ▼              │
+│                                  ┌──────────────────┐   │
+│                                  │   PR Comment     │   │
+│                                  │   + Commit       │   │
+│                                  │     Status       │   │
+│                                  └──────────────────┘   │
+│                                                          │
+└─────────────────────────────────────────────────────────┘
+```
+
+## Supported Coverage Formats
+
+### LCOV (Priority 1)
+Most common format. Used by:
+- JavaScript/TypeScript: Jest, Vitest, c8, nyc
+- Go: go test -coverprofile + gocov-lcov
+- Rust: grcov, tarpaulin
+- C/C++: gcov, llvm-cov
+- Ruby: SimpleCov (with lcov formatter)
+
+**Example LCOV:**
+```
+SF:/path/to/file.go
+DA:1,1
+DA:2,1
+DA:3,0
+LF:3
+LH:2
+end_of_record
+```
+
+### Cobertura XML (Priority 2)
+Used by:
+- Python: pytest-cov, coverage.py
+- Java: JaCoCo (with Cobertura export)
+- .NET: Coverlet
+
+**Example Cobertura:**
+```xml
+<coverage line-rate="0.85" branch-rate="0.75">
+  <packages>
+    <package name="src">
+      <classes>
+        <class filename="parser.go" line-rate="0.91">
+          <lines>
+            <line number="1" hits="1"/>
+            <line number="2" hits="0"/>
+          </lines>
+        </class>
+      </classes>
+    </package>
+  </packages>
+</coverage>
+```
+
+## GitHub Action Interface
+
+### Basic Usage
+```yaml
+- uses: litecov/litecov-action@v1
+```
+
+### Full Configuration
+```yaml
+- uses: litecov/litecov-action@v1
+  with:
+    # Coverage file path (auto-detected if not specified)
+    coverage-file: coverage.lcov
+
+    # File format: 'auto', 'lcov', 'cobertura'
+    format: auto
+
+    # Which files to show in comment
+    # Options: 'changed', 'all', 'threshold:80', 'worst:10'
+    show-files: changed
+
+    # Minimum coverage threshold for commit status (optional)
+    threshold: 0
+
+    # Custom comment title
+    title: Coverage Report
+
+    # GitHub token (defaults to GITHUB_TOKEN)
+    token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+### Inputs
+
+| Input | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `coverage-file` | No | Auto-detect | Path to coverage report file |
+| `format` | No | `auto` | Report format: `auto`, `lcov`, `cobertura` |
+| `show-files` | No | `changed` | File display mode |
+| `threshold` | No | `0` | Minimum coverage % for passing status |
+| `title` | No | `Coverage Report` | Comment header title |
+| `token` | No | `GITHUB_TOKEN` | GitHub token for API access |
+
+### Outputs
+
+| Output | Description |
+|--------|-------------|
+| `coverage` | Total coverage percentage |
+| `lines-covered` | Number of covered lines |
+| `lines-total` | Total number of lines |
+| `files-count` | Number of files with coverage data |
+
+## PR Comment Format
+
+Codecov-inspired design with clean tables and visual indicators:
+
+```markdown
+## Coverage Report
+
+| Metric | Value |
+|--------|-------|
+| **Coverage** | `82.5%` |
+| **Lines** | `1650/2000` |
+| **Files** | `24` |
+
+| File | Coverage | |
+|------|----------|---|
+| `src/parser.go` | `91.2%` | |
+| `src/upload.go` | `78.0%` | |
+| `src/utils.go` | `65.0%` | :warning: |
+
+<sub>Generated by [LiteCov](https://github.com/litecov/litecov-action)</sub>
+```
+
+### Visual Indicators
+- `:warning:` - Coverage below 50%
+- No indicator - Coverage 50-100%
+
+### File Display Modes
+
+**`changed` (default)**
+Shows only files modified in the PR. Cross-references coverage data with `git diff`.
+
+**`all`**
+Shows all files in the coverage report. Can result in long comments for large projects.
+
+**`threshold:N`**
+Shows files with coverage below N%. Example: `threshold:80` shows all files under 80%.
+
+**`worst:N`**
+Shows N files with the lowest coverage. Example: `worst:10` shows bottom 10 files.
+
+## Technical Implementation
+
+### Language: Go
+
+**Rationale:**
+- Single static binary (~5MB)
+- No runtime dependencies
+- Low memory footprint (~10-20MB)
+- Fast execution (<1s for typical reports)
+- Easy cross-compilation for GitHub Actions
+
+### Project Structure
+
+```
+litecov/
+├── cmd/
+│   └── litecov/
+│       └── main.go           # CLI entrypoint
+├── internal/
+│   ├── parser/
+│   │   ├── parser.go         # Parser interface
+│   │   ├── lcov.go           # LCOV parser
+│   │   ├── cobertura.go      # Cobertura XML parser
+│   │   └── detect.go         # Format auto-detection
+│   ├── coverage/
+│   │   └── coverage.go       # Coverage data structures
+│   ├── github/
+│   │   ├── client.go         # GitHub API client
+│   │   ├── comment.go        # PR comment formatting
+│   │   └── status.go         # Commit status
+│   └── filter/
+│       └── filter.go         # File filtering logic
+├── action.yml                # GitHub Action definition
+├── Dockerfile                # For building action
+├── go.mod
+├── go.sum
+└── README.md
+```
+
+### Core Data Structures
+
+```go
+// Coverage represents coverage data for a single file
+type FileCoverage struct {
+    Path         string
+    LinesCovered int
+    LinesTotal   int
+    Coverage     float64 // Percentage 0-100
+}
+
+// Report represents the complete coverage report
+type Report struct {
+    Files        []FileCoverage
+    TotalCovered int
+    TotalLines   int
+    Coverage     float64
+}
+
+// Config holds action configuration
+type Config struct {
+    CoverageFile string
+    Format       string // auto, lcov, cobertura
+    ShowFiles    string // changed, all, threshold:N, worst:N
+    Threshold    float64
+    Title        string
+    Token        string
+}
+```
+
+### Parser Interface
+
+```go
+type Parser interface {
+    Parse(r io.Reader) (*Report, error)
+}
+
+// Auto-detection based on file content
+func DetectFormat(r io.Reader) (Parser, error)
+```
+
+### GitHub Integration
+
+Uses GitHub REST API via `GITHUB_TOKEN`:
+
+1. **Get PR changed files**: `GET /repos/{owner}/{repo}/pulls/{pull_number}/files`
+2. **Post/Update comment**: `POST /repos/{owner}/{repo}/issues/{issue_number}/comments`
+3. **Set commit status**: `POST /repos/{owner}/{repo}/statuses/{sha}`
+
+Comment is updated (not duplicated) using a hidden marker:
+```markdown
+<!-- litecov-comment -->
+```
+
+## Future Enhancements (Post-MVP)
+
+These are explicitly out of scope for MVP but documented for future consideration:
+
+### Optional Server Mode
+For users who want:
+- Coverage history and trends
+- Web dashboard
+- Coverage badges
+- Cross-repo visibility
+
+**Tech stack for server:**
+- Go HTTP server (same binary, different mode)
+- SQLite for local storage
+- Optional Turso integration for cloud SQLite
+
+**Deployment:**
+```bash
+# Single binary, single command
+litecov serve --port 8080 --db ./litecov.db
+
+# Or with Turso
+litecov serve --turso-url libsql://... --turso-token ...
+```
+
+### Additional Formats
+- JaCoCo XML (native Java)
+- Go coverage profile (native)
+- SimpleCov JSON
+
+### Features
+- Coverage diff (requires storage)
+- Branch protection integration
+- Slack/Discord notifications
+- Custom comment templates
+
+## Testing Strategy
+
+### Unit Tests
+- LCOV parser with various edge cases
+- Cobertura parser with various schemas
+- Coverage calculation accuracy
+- Filter logic for each mode
+
+### Integration Tests
+- GitHub API mocking
+- End-to-end with sample coverage files
+- Comment formatting verification
+
+### Test Coverage Target
+Minimum 80% coverage for the coverage tool itself.
+
+## Security Considerations
+
+1. **Token scope**: Uses `GITHUB_TOKEN` which has minimal required permissions
+2. **No secrets**: No external tokens or API keys needed
+3. **No network calls**: Beyond GitHub API, no external services contacted
+4. **Input validation**: Coverage file paths validated to prevent path traversal
+
+## Performance Requirements
+
+| Metric | Target |
+|--------|--------|
+| Parse 10K line LCOV | < 100ms |
+| Parse 1MB Cobertura | < 200ms |
+| Total action runtime | < 5s |
+| Memory usage | < 50MB |
+| Binary size | < 10MB |
+
+## Success Criteria
+
+1. One-line setup in workflow file
+2. PR comment appears within 30s of workflow completion
+3. Correctly parses LCOV and Cobertura formats
+4. Handles repos with 1000+ files
+5. Clear documentation with copy-paste examples
+
+## References
+
+- [Codecov PR Comments](https://docs.codecov.com/docs/pull-request-comments)
+- [GitHub Actions Toolkit](https://github.com/actions/toolkit)
+- [LCOV Format](https://github.com/linux-test-project/lcov)
+- [Cobertura XML Schema](https://cobertura.github.io/cobertura/)
+- [Turso/libSQL](https://docs.turso.tech/)
