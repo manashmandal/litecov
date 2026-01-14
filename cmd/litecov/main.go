@@ -14,8 +14,11 @@ import (
 )
 
 func main() {
-	fmt.Println("LITECOV STARTED - V4")
+	fmt.Println("LITECOV STARTED - V5")
 	fmt.Printf("os.Args = %v\n", os.Args)
+	for i, arg := range os.Args {
+		fmt.Printf("  arg[%d] = %q (bytes: %v)\n", i, arg, []byte(arg))
+	}
 	coverageFile := flag.String("coverage-file", "", "Path to coverage report file")
 	format := flag.String("format", "auto", "Coverage format: auto, lcov, cobertura")
 	showFiles := flag.String("show-files", "changed", "Files to show: all, changed, threshold:N, worst:N")
