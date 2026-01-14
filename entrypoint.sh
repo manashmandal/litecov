@@ -1,9 +1,6 @@
 #!/bin/sh
 set -e
 
-# Debug: Show annotation setting
-echo "INPUT_ANNOTATIONS=$INPUT_ANNOTATIONS"
-
 # Build args from environment variables
 ARGS=""
 
@@ -30,14 +27,7 @@ fi
 
 if [ "$INPUT_ANNOTATIONS" = "true" ]; then
     ARGS="$ARGS -annotations=true"
-    echo "Annotations enabled"
 fi
 
-echo "Running: /litecov $ARGS"
-# Test annotation from entrypoint script
-echo "::warning file=entrypoint.sh,line=1,title=Test::Test annotation from entrypoint"
 # Run with eval to properly expand quoted arguments
 eval /litecov $ARGS
-exit_code=$?
-echo "litecov exit code: $exit_code"
-exit $exit_code

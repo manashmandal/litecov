@@ -14,11 +14,6 @@ import (
 )
 
 func main() {
-	fmt.Println("LITECOV STARTED - V5")
-	fmt.Printf("os.Args = %v\n", os.Args)
-	for i, arg := range os.Args {
-		fmt.Printf("  arg[%d] = %q (bytes: %v)\n", i, arg, []byte(arg))
-	}
 	coverageFile := flag.String("coverage-file", "", "Path to coverage report file")
 	format := flag.String("format", "auto", "Coverage format: auto, lcov, cobertura")
 	showFiles := flag.String("show-files", "changed", "Files to show: all, changed, threshold:N, worst:N")
@@ -28,7 +23,6 @@ func main() {
 	baseCoverageFile := flag.String("base-coverage-file", "", "Path to base branch coverage file for comparison")
 	baseBranch := flag.String("base-branch", "main", "Base branch name for comparison display")
 	flag.Parse()
-	fmt.Printf("AFTER PARSE: annotations=%v coverage-file=%q\n", *annotations, *coverageFile)
 
 	// Environment variable overrides for GitHub Action
 	if *baseCoverageFile == "" {
@@ -131,11 +125,7 @@ func main() {
 	}
 
 	if *annotations {
-		// Force output to be visible in logs - use fmt.Println which goes to stdout
-		fmt.Println("===== ANNOTATION START V2 =====")
-		fmt.Printf("Report has %d files, changedFiles has %d entries\n", len(report.Files), len(changedFiles))
 		outputAnnotations(report, changedFiles)
-		fmt.Println("===== ANNOTATION END V2 =====")
 	}
 
 	repoURL := fmt.Sprintf("https://github.com/%s", repository)
@@ -264,22 +254,16 @@ func detectCoverageFile() string {
 }
 
 func outputAnnotations(report *coverage.Report, changedFiles []string) {
-	fmt.Println("+++++ INSIDE outputAnnotations V2 +++++")
 	changedSet := make(map[string]bool)
 	for _, f := range changedFiles {
 		changedSet[f] = true
 	}
 
-	fmt.Printf("Processing %d files in report\n", len(report.Files))
-
-	annotationCount := 0
-	for i, file := range report.Files {
+	for _, file := range report.Files {
 		// Normalize path: strip Go module prefix to get repo-relative path
 		// Coverage paths may be like "github.com/user/repo/internal/foo.go"
 		// but we need "internal/foo.go" for GitHub annotations
 		relativePath := normalizePathForAnnotation(file.Path)
-
-		fmt.Printf("File[%d]: %s -> %s (uncovered: %d)\n", i, file.Path, relativePath, len(file.UncoveredLines))
 
 		// Check if file is in changed set (use normalized path for matching)
 		if len(changedFiles) > 0 && !isPathInChangedSet(relativePath, changedSet) {
@@ -292,7 +276,6 @@ func outputAnnotations(report *coverage.Report, changedFiles []string) {
 
 		ranges := comment.GroupConsecutiveLines(file.UncoveredLines)
 		for _, r := range ranges {
-			annotationCount++
 			if r.Start == r.End {
 				fmt.Printf("::warning file=%s,line=%d,title=Uncovered::Line %d not covered by tests\n",
 					relativePath, r.Start, r.Start)
@@ -302,7 +285,6 @@ func outputAnnotations(report *coverage.Report, changedFiles []string) {
 			}
 		}
 	}
-	fmt.Printf("Total annotations emitted: %d\n", annotationCount)
 }
 
 // normalizePathForAnnotation converts a Go module path to a repo-relative path
