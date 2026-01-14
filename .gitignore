@@ -1,0 +1,17 @@
+# Binaries
+litecov
+*.exe
+dist/
+
+# Test artifacts
+coverage.out
+coverage.lcov
+coverage.xml
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
