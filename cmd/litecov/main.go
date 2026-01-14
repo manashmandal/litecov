@@ -263,7 +263,9 @@ func outputAnnotations(report *coverage.Report, changedFiles []string) {
 
 	// Force immediate output by using Println (which flushes)
 	fmt.Println("[DEBUG] outputAnnotations called")
+	fmt.Fprintf(os.Stderr, "[STDERR] outputAnnotations called\n")
 	fmt.Printf("Annotation check: %d files in coverage, %d changed files\n", len(report.Files), len(changedFiles))
+	fmt.Fprintf(os.Stderr, "Annotation check (stderr): %d files in coverage, %d changed files\n", len(report.Files), len(changedFiles))
 
 	annotationCount := 0
 	for _, file := range report.Files {
