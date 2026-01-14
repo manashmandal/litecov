@@ -24,7 +24,8 @@ if [ -n "$INPUT_THRESHOLD" ]; then
 fi
 
 if [ -n "$INPUT_TITLE" ]; then
-    ARGS="$ARGS -title=$INPUT_TITLE"
+    # Quote the title in case it contains spaces
+    ARGS="$ARGS -title=\"$INPUT_TITLE\""
 fi
 
 if [ "$INPUT_ANNOTATIONS" = "true" ]; then
@@ -35,8 +36,8 @@ fi
 echo "Running: /litecov $ARGS"
 # Test annotation from entrypoint script
 echo "::warning file=entrypoint.sh,line=1,title=Test::Test annotation from entrypoint"
-# Run without exec to capture all output
-/litecov $ARGS
+# Run with eval to properly expand quoted arguments
+eval /litecov $ARGS
 exit_code=$?
 echo "litecov exit code: $exit_code"
 exit $exit_code
