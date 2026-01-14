@@ -20,7 +20,17 @@ func main() {
 	threshold := flag.Float64("threshold", 0, "Minimum coverage threshold for passing status")
 	title := flag.String("title", "Coverage Report", "Comment title")
 	annotations := flag.Bool("annotations", false, "Output GitHub annotations for uncovered lines")
+	baseCoverageFile := flag.String("base-coverage-file", "", "Path to base branch coverage file for comparison")
+	baseBranch := flag.String("base-branch", "main", "Base branch name for comparison display")
 	flag.Parse()
+
+	// Environment variable overrides for GitHub Action
+	if *baseCoverageFile == "" {
+		*baseCoverageFile = os.Getenv("INPUT_BASE_COVERAGE_FILE")
+	}
+	if envBaseBranch := os.Getenv("INPUT_BASE_BRANCH"); envBaseBranch != "" {
+		*baseBranch = envBaseBranch
+	}
 
 	token := os.Getenv("GITHUB_TOKEN")
 	repository := os.Getenv("GITHUB_REPOSITORY")
@@ -85,18 +95,37 @@ func main() {
 		os.Exit(1)
 	}
 
-	if *annotations {
-		outputAnnotations(report)
+	// Parse base coverage if provided
+	var baseReport *coverage.Report
+	if *baseCoverageFile != "" {
+		if baseFile, err := os.Open(*baseCoverageFile); err == nil {
+			defer baseFile.Close()
+			if detected, err := parser.DetectFormat(baseFile); err == nil {
+				baseFile.Seek(0, 0)
+				if bp, err := parser.GetParser(detected); err == nil {
+					baseReport, _ = bp.Parse(baseFile)
+					if baseReport != nil {
+						fmt.Printf("Loaded base coverage from: %s (%.2f%%)\n", *baseCoverageFile, baseReport.Coverage)
+					}
+				}
+			}
+		} else {
+			fmt.Fprintf(os.Stderr, "Warning: Failed to open base coverage file: %v\n", err)
+		}
 	}
 
 	gh := github.NewClient(token, owner, repo)
 
 	var changedFiles []string
-	if *showFiles == "changed" && prNumber > 0 {
+	if (*showFiles == "changed" || *annotations) && prNumber > 0 {
 		changedFiles, err = gh.GetChangedFiles(prNumber)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: Failed to get changed files: %v\n", err)
 		}
+	}
+
+	if *annotations {
+		outputAnnotations(report, changedFiles)
 	}
 
 	repoURL := fmt.Sprintf("https://github.com/%s", repository)
@@ -106,6 +135,8 @@ func main() {
 		ChangedFiles: changedFiles,
 		RepoURL:      repoURL,
 		SHA:          sha,
+		PRNumber:     prNumber,
+		BaseBranch:   *baseBranch,
 	}
 	if strings.HasPrefix(*showFiles, "threshold:") {
 		val, _ := strconv.ParseFloat(strings.TrimPrefix(*showFiles, "threshold:"), 64)
@@ -116,7 +147,14 @@ func main() {
 		opts.WorstN = val
 	}
 
-	commentBody := comment.Format(report, opts)
+	// Generate comment with or without comparison
+	var commentBody string
+	if baseReport != nil {
+		comp := coverage.NewComparison(report, baseReport, changedFiles)
+		commentBody = comment.FormatWithComparison(comp, opts)
+	} else {
+		commentBody = comment.Format(report, opts)
+	}
 
 	if prNumber > 0 {
 		existingID, _ := gh.FindExistingComment(prNumber, comment.Marker)
@@ -215,10 +253,30 @@ func detectCoverageFile() string {
 	return ""
 }
 
-func outputAnnotations(report *coverage.Report) {
+func outputAnnotations(report *coverage.Report, changedFiles []string) {
+	changedSet := make(map[string]bool)
+	for _, f := range changedFiles {
+		changedSet[f] = true
+	}
+
 	for _, file := range report.Files {
-		for _, line := range file.UncoveredLines {
-			fmt.Printf("::warning file=%s,line=%d::Line not covered by tests\n", file.Path, line)
+		if len(changedFiles) > 0 && !changedSet[file.Path] {
+			continue
+		}
+
+		if len(file.UncoveredLines) == 0 {
+			continue
+		}
+
+		ranges := comment.GroupConsecutiveLines(file.UncoveredLines)
+		for _, r := range ranges {
+			if r.Start == r.End {
+				fmt.Printf("::warning file=%s,line=%d,title=Uncovered::Line %d not covered by tests\n",
+					file.Path, r.Start, r.Start)
+			} else {
+				fmt.Printf("::warning file=%s,line=%d,endLine=%d,title=Uncovered::Lines %d-%d not covered by tests\n",
+					file.Path, r.Start, r.End, r.Start, r.End)
+			}
 		}
 	}
 }

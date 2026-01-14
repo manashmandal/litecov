@@ -30,6 +30,13 @@ inputs:
     description: 'Output GitHub annotations for uncovered lines'
     required: false
     default: 'false'
+  base-coverage-file:
+    description: 'Path to base branch coverage file for comparison'
+    required: false
+  base-branch:
+    description: 'Base branch name for display in diff header'
+    required: false
+    default: 'main'
   token:
     description: 'GitHub token'
     required: false
@@ -56,3 +63,5 @@ runs:
     INPUT_THRESHOLD: ${{ inputs.threshold }}
     INPUT_TITLE: ${{ inputs.title }}
     INPUT_ANNOTATIONS: ${{ inputs.annotations }}
+    INPUT_BASE_COVERAGE_FILE: ${{ inputs.base-coverage-file }}
+    INPUT_BASE_BRANCH: ${{ inputs.base-branch }}
