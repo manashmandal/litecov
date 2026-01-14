@@ -28,7 +28,7 @@ if [ -n "$INPUT_TITLE" ]; then
 fi
 
 if [ "$INPUT_ANNOTATIONS" = "true" ]; then
-    ARGS="$ARGS -annotations"
+    ARGS="$ARGS -annotations=true"
     echo "Annotations enabled"
 fi
 
