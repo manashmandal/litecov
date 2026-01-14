@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="logo.png" alt="LiteCov" width="200">
+</p>
+
 # LiteCov
 
 Lightweight code coverage reporter for GitHub Actions. Zero infrastructure, one-line setup.
@@ -5,7 +9,7 @@ Lightweight code coverage reporter for GitHub Actions. Zero infrastructure, one-
 ## Quick Start
 
 ```yaml
-- uses: litecov/litecov@v1
+- uses: manashmandal/litecov@v1
 ```
 
 That's it. LiteCov will auto-detect your coverage file and post a PR comment.
@@ -41,13 +45,13 @@ jobs:
           go install github.com/jandelgado/gcov2lcov@latest
           gcov2lcov -infile=coverage.out -outfile=coverage.lcov
 
-      - uses: litecov/litecov@v1
+      - uses: manashmandal/litecov@v1
 ```
 
 ### With Options
 
 ```yaml
-- uses: litecov/litecov@v1
+- uses: manashmandal/litecov@v1
   with:
     coverage-file: coverage.lcov
     format: lcov
@@ -62,7 +66,7 @@ jobs:
 - name: Run tests
   run: pytest --cov=src --cov-report=xml
 
-- uses: litecov/litecov@v1
+- uses: manashmandal/litecov@v1
   with:
     coverage-file: coverage.xml
 ```
@@ -73,7 +77,7 @@ jobs:
 - name: Run tests
   run: npm test -- --coverage --coverageReporters=lcov
 
-- uses: litecov/litecov@v1
+- uses: manashmandal/litecov@v1
   with:
     coverage-file: coverage/lcov.info
 ```
@@ -87,6 +91,7 @@ jobs:
 | `show-files` | `changed` | Files to show (see below) |
 | `threshold` | `0` | Minimum coverage % to pass |
 | `title` | `Coverage Report` | Comment header |
+| `annotations` | `false` | Output GitHub annotations for uncovered lines |
 | `token` | `GITHUB_TOKEN` | GitHub token |
 
 ### Show Files Options
@@ -108,7 +113,7 @@ jobs:
 ### Using Outputs
 
 ```yaml
-- uses: litecov/litecov@v1
+- uses: manashmandal/litecov@v1
   id: coverage
 
 - name: Check coverage
@@ -119,7 +124,7 @@ jobs:
 
 ## PR Comment
 
-LiteCov posts a clean, informative comment on your PR:
+LiteCov posts a clean, informative comment on your PR with clickable links:
 
 ```
 ## Coverage Report
@@ -130,13 +135,15 @@ LiteCov posts a clean, informative comment on your PR:
 | **Lines** | `165/200` |
 | **Files** | `12` |
 
-| File | Coverage | |
-|------|----------|---|
-| `src/parser.go` | `91.20%` | |
-| `src/utils.go` | `45.00%` | :warning: |
+| File | Coverage | Uncovered Lines |
+|------|----------|----------------|
+| `src/parser.go` | `91.20%` | L45-47, L102 |
+| `src/utils.go` | `45.00%` :warning: | L12-15, L30-35, L50 +2 more |
 ```
 
-Files with coverage below 50% are marked with :warning:
+- Files are hyperlinked to the GitHub blob view
+- Uncovered lines are clickable and link to specific line ranges
+- Files with coverage below 50% are marked with :warning:
 
 ## Supported Formats
 
@@ -171,7 +178,7 @@ LiteCov looks for coverage files in this order:
 Set a minimum coverage threshold:
 
 ```yaml
-- uses: litecov/litecov@v1
+- uses: manashmandal/litecov@v1
   with:
     threshold: 80
 ```
