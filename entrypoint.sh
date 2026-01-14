@@ -33,7 +33,7 @@ if [ "$INPUT_ANNOTATIONS" = "true" ]; then
 fi
 
 echo "Running: /litecov $ARGS"
-# Test annotation directly from entrypoint
+# Test annotation from entrypoint script
 echo "::warning file=entrypoint.sh,line=1,title=Test::Test annotation from entrypoint"
 # Run without exec to capture all output
 /litecov $ARGS
