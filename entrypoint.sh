@@ -1,6 +1,9 @@
 #!/bin/sh
 set -e
 
+# Debug: Show annotation setting
+echo "INPUT_ANNOTATIONS=$INPUT_ANNOTATIONS"
+
 # Build args from environment variables
 ARGS=""
 
@@ -26,6 +29,8 @@ fi
 
 if [ "$INPUT_ANNOTATIONS" = "true" ]; then
     ARGS="$ARGS -annotations"
+    echo "Annotations enabled"
 fi
 
+echo "Running: /litecov $ARGS"
 exec /litecov $ARGS
