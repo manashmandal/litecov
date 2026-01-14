@@ -75,3 +75,15 @@ func TestReport_Calculate_SingleFile(t *testing.T) {
 		t.Errorf("Coverage = %v, want 75.0", report.Coverage)
 	}
 }
+
+func TestFileCoverage_Path(t *testing.T) {
+	fc := FileCoverage{
+		Path:         "src/main.go",
+		LinesCovered: 50,
+		LinesTotal:   100,
+	}
+
+	if fc.Path != "src/main.go" {
+		t.Errorf("Path = %v, want src/main.go", fc.Path)
+	}
+}
