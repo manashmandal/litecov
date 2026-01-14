@@ -35,4 +35,8 @@ fi
 echo "Running: /litecov $ARGS"
 # Test annotation directly from entrypoint
 echo "::warning file=entrypoint.sh,line=1,title=Test::Test annotation from entrypoint"
-exec /litecov $ARGS
+# Run without exec to capture all output
+/litecov $ARGS
+exit_code=$?
+echo "litecov exit code: $exit_code"
+exit $exit_code
