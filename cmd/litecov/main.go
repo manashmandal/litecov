@@ -125,9 +125,11 @@ func main() {
 	}
 
 	if *annotations {
-		fmt.Fprintf(os.Stderr, "[ANNOTATIONS] Starting annotation output for %d files\n", len(report.Files))
+		// Force output to be visible in logs - use fmt.Println which goes to stdout
+		fmt.Println("===== ANNOTATION START V2 =====")
+		fmt.Printf("Report has %d files, changedFiles has %d entries\n", len(report.Files), len(changedFiles))
 		outputAnnotations(report, changedFiles)
-		fmt.Fprintf(os.Stderr, "[ANNOTATIONS] Finished annotation output\n")
+		fmt.Println("===== ANNOTATION END V2 =====")
 	}
 
 	repoURL := fmt.Sprintf("https://github.com/%s", repository)
@@ -256,12 +258,13 @@ func detectCoverageFile() string {
 }
 
 func outputAnnotations(report *coverage.Report, changedFiles []string) {
+	fmt.Println("+++++ INSIDE outputAnnotations V2 +++++")
 	changedSet := make(map[string]bool)
 	for _, f := range changedFiles {
 		changedSet[f] = true
 	}
 
-	fmt.Fprintf(os.Stderr, "[STDERR] outputAnnotations: %d files in coverage, %d changed files\n", len(report.Files), len(changedFiles))
+	fmt.Printf("Processing %d files in report\n", len(report.Files))
 
 	annotationCount := 0
 	for i, file := range report.Files {
@@ -270,11 +273,10 @@ func outputAnnotations(report *coverage.Report, changedFiles []string) {
 		// but we need "internal/foo.go" for GitHub annotations
 		relativePath := normalizePathForAnnotation(file.Path)
 
-		fmt.Fprintf(os.Stderr, "[STDERR] File[%d]: %s -> %s (uncovered: %d)\n", i, file.Path, relativePath, len(file.UncoveredLines))
+		fmt.Printf("File[%d]: %s -> %s (uncovered: %d)\n", i, file.Path, relativePath, len(file.UncoveredLines))
 
 		// Check if file is in changed set (use normalized path for matching)
 		if len(changedFiles) > 0 && !isPathInChangedSet(relativePath, changedSet) {
-			fmt.Fprintf(os.Stderr, "[STDERR] Skipping %s (not in changed files)\n", relativePath)
 			continue
 		}
 
@@ -294,7 +296,7 @@ func outputAnnotations(report *coverage.Report, changedFiles []string) {
 			}
 		}
 	}
-	fmt.Fprintf(os.Stderr, "[STDERR] Total annotations emitted: %d\n", annotationCount)
+	fmt.Printf("Total annotations emitted: %d\n", annotationCount)
 }
 
 // normalizePathForAnnotation converts a Go module path to a repo-relative path
