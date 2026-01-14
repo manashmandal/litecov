@@ -125,9 +125,11 @@ func main() {
 	}
 
 	if *annotations {
-		fmt.Println("[DEBUG] Before outputAnnotations")
+		os.Stdout.WriteString("[DEBUG] Before outputAnnotations\n")
+		os.Stdout.Sync()
 		outputAnnotations(report, changedFiles)
-		fmt.Println("[DEBUG] After outputAnnotations")
+		os.Stdout.WriteString("[DEBUG] After outputAnnotations\n")
+		os.Stdout.Sync()
 	}
 
 	repoURL := fmt.Sprintf("https://github.com/%s", repository)
@@ -261,11 +263,15 @@ func outputAnnotations(report *coverage.Report, changedFiles []string) {
 		changedSet[f] = true
 	}
 
-	// Force immediate output by using Println (which flushes)
-	fmt.Println("[DEBUG] outputAnnotations called")
-	fmt.Fprintf(os.Stderr, "[STDERR] outputAnnotations called\n")
+	// Force immediate output using direct writes and sync
+	os.Stdout.WriteString("[DEBUG] outputAnnotations called\n")
+	os.Stdout.Sync()
+	os.Stderr.WriteString("[STDERR] outputAnnotations called\n")
+	os.Stderr.Sync()
 	fmt.Printf("Annotation check: %d files in coverage, %d changed files\n", len(report.Files), len(changedFiles))
+	os.Stdout.Sync()
 	fmt.Fprintf(os.Stderr, "Annotation check (stderr): %d files in coverage, %d changed files\n", len(report.Files), len(changedFiles))
+	os.Stderr.Sync()
 
 	annotationCount := 0
 	for _, file := range report.Files {
