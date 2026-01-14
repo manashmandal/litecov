@@ -20,7 +20,17 @@ func main() {
 	threshold := flag.Float64("threshold", 0, "Minimum coverage threshold for passing status")
 	title := flag.String("title", "Coverage Report", "Comment title")
 	annotations := flag.Bool("annotations", false, "Output GitHub annotations for uncovered lines")
+	baseCoverageFile := flag.String("base-coverage-file", "", "Path to base branch coverage file for comparison")
+	baseBranch := flag.String("base-branch", "main", "Base branch name for comparison display")
 	flag.Parse()
+
+	// Environment variable overrides for GitHub Action
+	if *baseCoverageFile == "" {
+		*baseCoverageFile = os.Getenv("INPUT_BASE_COVERAGE_FILE")
+	}
+	if envBaseBranch := os.Getenv("INPUT_BASE_BRANCH"); envBaseBranch != "" {
+		*baseBranch = envBaseBranch
+	}
 
 	token := os.Getenv("GITHUB_TOKEN")
 	repository := os.Getenv("GITHUB_REPOSITORY")
@@ -85,6 +95,25 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Parse base coverage if provided
+	var baseReport *coverage.Report
+	if *baseCoverageFile != "" {
+		if baseFile, err := os.Open(*baseCoverageFile); err == nil {
+			defer baseFile.Close()
+			if detected, err := parser.DetectFormat(baseFile); err == nil {
+				baseFile.Seek(0, 0)
+				if bp, err := parser.GetParser(detected); err == nil {
+					baseReport, _ = bp.Parse(baseFile)
+					if baseReport != nil {
+						fmt.Printf("Loaded base coverage from: %s (%.2f%%)\n", *baseCoverageFile, baseReport.Coverage)
+					}
+				}
+			}
+		} else {
+			fmt.Fprintf(os.Stderr, "Warning: Failed to open base coverage file: %v\n", err)
+		}
+	}
+
 	gh := github.NewClient(token, owner, repo)
 
 	var changedFiles []string
@@ -106,6 +135,8 @@ func main() {
 		ChangedFiles: changedFiles,
 		RepoURL:      repoURL,
 		SHA:          sha,
+		PRNumber:     prNumber,
+		BaseBranch:   *baseBranch,
 	}
 	if strings.HasPrefix(*showFiles, "threshold:") {
 		val, _ := strconv.ParseFloat(strings.TrimPrefix(*showFiles, "threshold:"), 64)
@@ -116,7 +147,14 @@ func main() {
 		opts.WorstN = val
 	}
 
-	commentBody := comment.Format(report, opts)
+	// Generate comment with or without comparison
+	var commentBody string
+	if baseReport != nil {
+		comp := coverage.NewComparison(report, baseReport, changedFiles)
+		commentBody = comment.FormatWithComparison(comp, opts)
+	} else {
+		commentBody = comment.Format(report, opts)
+	}
 
 	if prNumber > 0 {
 		existingID, _ := gh.FindExistingComment(prNumber, comment.Marker)

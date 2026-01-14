@@ -26,7 +26,7 @@ func TestFormat(t *testing.T) {
 	result := Format(report, opts)
 
 	checks := []string{
-		":bar_chart: Coverage Report",
+		"Coverage Report",
 		"57.50%",
 		"115/200",
 		"src/parser.go",
@@ -35,9 +35,10 @@ func TestFormat(t *testing.T) {
 		"<details>",
 		"Coverage Diff",
 		"Impacted Files (2)",
-		":warning:",
-		":x:",
+		"\u26A0\uFE0F", // warning emoji
+		"\u274C",       // x emoji
 		"LiteCov",
+		"logo.png",
 	}
 
 	for _, check := range checks {
@@ -57,7 +58,7 @@ func TestFormat_NoFiles(t *testing.T) {
 
 	result := Format(report, Options{Title: "Test", ShowFiles: "all"})
 
-	if !strings.Contains(result, ":bar_chart: Test") {
+	if !strings.Contains(result, "Test") {
 		t.Error("missing title")
 	}
 	if strings.Contains(result, "Impacted Files") {
@@ -215,7 +216,7 @@ func TestFormat_StatusEmoji_HighCoverage(t *testing.T) {
 
 	result := Format(report, Options{ShowFiles: "all"})
 
-	if !strings.Contains(result, ":white_check_mark:") {
+	if !strings.Contains(result, "\u2705") {
 		t.Error("should have checkmark for high coverage")
 	}
 }
@@ -232,7 +233,7 @@ func TestFormat_StatusEmoji_MediumCoverage(t *testing.T) {
 
 	result := Format(report, Options{ShowFiles: "all"})
 
-	if !strings.Contains(result, ":warning:") {
+	if !strings.Contains(result, "\u26A0\uFE0F") {
 		t.Error("should have warning for medium coverage")
 	}
 }
@@ -249,7 +250,7 @@ func TestFormat_StatusEmoji_LowCoverage(t *testing.T) {
 
 	result := Format(report, Options{ShowFiles: "all"})
 
-	if !strings.Contains(result, ":x:") {
+	if !strings.Contains(result, "\u274C") {
 		t.Error("should have X for low coverage")
 	}
 }
@@ -339,12 +340,12 @@ func TestGetStatusEmoji(t *testing.T) {
 		coverage float64
 		expected string
 	}{
-		{100, ":white_check_mark:"},
-		{80, ":white_check_mark:"},
-		{79.99, ":warning:"},
-		{50, ":warning:"},
-		{49.99, ":x:"},
-		{0, ":x:"},
+		{100, "\u2705"},
+		{80, "\u2705"},
+		{79.99, "\u26A0\uFE0F"},
+		{50, "\u26A0\uFE0F"},
+		{49.99, "\u274C"},
+		{0, "\u274C"},
 	}
 
 	for _, tt := range tests {
@@ -412,19 +413,20 @@ func TestGroupConsecutiveLines(t *testing.T) {
 }
 
 func TestFormatHeader(t *testing.T) {
-	report := &coverage.Report{}
-
 	t.Run("with title", func(t *testing.T) {
 		opts := Options{Title: "My Report"}
-		result := formatHeader(report, opts)
+		result := formatHeader(opts)
 		if !strings.Contains(result, "My Report") {
 			t.Error("missing custom title")
+		}
+		if !strings.Contains(result, "logo.png") {
+			t.Error("missing logo")
 		}
 	})
 
 	t.Run("default title", func(t *testing.T) {
 		opts := Options{}
-		result := formatHeader(report, opts)
+		result := formatHeader(opts)
 		if !strings.Contains(result, "Coverage Report") {
 			t.Error("missing default title")
 		}
@@ -450,7 +452,7 @@ func TestFormatQuickSummary(t *testing.T) {
 	if !strings.Contains(result, "10") {
 		t.Error("missing files count")
 	}
-	if !strings.Contains(result, ":white_check_mark:") {
+	if !strings.Contains(result, "\u2705") {
 		t.Error("missing status emoji")
 	}
 }
@@ -500,10 +502,10 @@ func TestFormatImpactedFiles(t *testing.T) {
 	if !strings.Contains(result, "file2.go") {
 		t.Error("missing file2")
 	}
-	if !strings.Contains(result, ":white_check_mark:") {
+	if !strings.Contains(result, "\u2705") {
 		t.Error("missing checkmark for high coverage file")
 	}
-	if !strings.Contains(result, ":x:") {
+	if !strings.Contains(result, "\u274C") {
 		t.Error("missing X for low coverage file")
 	}
 }
@@ -547,5 +549,381 @@ func TestFormatFooter(t *testing.T) {
 	}
 	if !strings.Contains(result, "https://github.com/manashmandal/litecov") {
 		t.Error("missing repo URL")
+	}
+	if !strings.Contains(result, "\U0001F4C8") {
+		t.Error("missing chart emoji in footer")
+	}
+}
+
+func TestFormatWithComparison(t *testing.T) {
+	head := &coverage.Report{
+		Files: []coverage.FileCoverage{
+			{Path: "src/parser.go", LinesCovered: 80, LinesTotal: 100},
+			{Path: "src/new.go", LinesCovered: 65, LinesTotal: 100},
+		},
+		TotalCovered: 145,
+		TotalLines:   200,
+		Coverage:     72.5,
+	}
+
+	base := &coverage.Report{
+		Files: []coverage.FileCoverage{
+			{Path: "src/parser.go", LinesCovered: 75, LinesTotal: 100},
+		},
+		TotalCovered: 75,
+		TotalLines:   100,
+		Coverage:     75.0,
+	}
+
+	comp := coverage.NewComparison(head, base, nil)
+	opts := Options{
+		Title:      "PR Coverage",
+		PRNumber:   123,
+		BaseBranch: "main",
+	}
+
+	result := FormatWithComparison(comp, opts)
+
+	checks := []string{
+		Marker,
+		"PR Coverage",
+		"logo.png",
+		"72.50%",
+		"(-2.50%)",
+		"Coverage Diff",
+		"main",
+		"#123",
+		"Impacted Files",
+		"\u0394", // Delta column header
+		"LiteCov",
+	}
+
+	for _, check := range checks {
+		if !strings.Contains(result, check) {
+			t.Errorf("missing %q in output", check)
+		}
+	}
+}
+
+func TestFormatWithComparison_Nil(t *testing.T) {
+	result := FormatWithComparison(nil, Options{})
+	if result != "" {
+		t.Error("expected empty string for nil comparison")
+	}
+
+	comp := &coverage.Comparison{Head: nil}
+	result = FormatWithComparison(comp, Options{})
+	if result != "" {
+		t.Error("expected empty string for nil head")
+	}
+}
+
+func TestFormatWithComparison_NoBase(t *testing.T) {
+	head := &coverage.Report{
+		Files: []coverage.FileCoverage{
+			{Path: "src/parser.go", LinesCovered: 80, LinesTotal: 100},
+		},
+		TotalCovered: 80,
+		TotalLines:   100,
+		Coverage:     80.0,
+	}
+
+	comp := coverage.NewComparison(head, nil, nil)
+	opts := Options{
+		Title: "Coverage",
+	}
+
+	result := FormatWithComparison(comp, opts)
+
+	if !strings.Contains(result, "80.00%") {
+		t.Error("missing coverage percentage")
+	}
+	if strings.Contains(result, "(+") || strings.Contains(result, "(-") {
+		t.Error("should not show delta when no base")
+	}
+}
+
+func TestFormatQuickSummaryWithDelta(t *testing.T) {
+	tests := []struct {
+		name     string
+		comp     *coverage.Comparison
+		contains []string
+		excludes []string
+	}{
+		{
+			name: "positive delta",
+			comp: &coverage.Comparison{
+				Head: &coverage.Report{
+					TotalCovered: 85,
+					TotalLines:   100,
+					Coverage:     85.0,
+					Files:        make([]coverage.FileCoverage, 5),
+				},
+				Base: &coverage.Report{
+					Coverage: 80.0,
+				},
+				CoverageDelta: 5.0,
+			},
+			contains: []string{"85.00%", "(+5.00%)"},
+		},
+		{
+			name: "negative delta",
+			comp: &coverage.Comparison{
+				Head: &coverage.Report{
+					TotalCovered: 75,
+					TotalLines:   100,
+					Coverage:     75.0,
+					Files:        make([]coverage.FileCoverage, 5),
+				},
+				Base: &coverage.Report{
+					Coverage: 80.0,
+				},
+				CoverageDelta: -5.0,
+			},
+			contains: []string{"75.00%", "(-5.00%)"},
+		},
+		{
+			name: "zero delta",
+			comp: &coverage.Comparison{
+				Head: &coverage.Report{
+					TotalCovered: 80,
+					TotalLines:   100,
+					Coverage:     80.0,
+					Files:        make([]coverage.FileCoverage, 5),
+				},
+				Base: &coverage.Report{
+					Coverage: 80.0,
+				},
+				CoverageDelta: 0,
+			},
+			contains: []string{"80.00%"},
+			excludes: []string{"(+", "(-"},
+		},
+		{
+			name: "no base",
+			comp: &coverage.Comparison{
+				Head: &coverage.Report{
+					TotalCovered: 80,
+					TotalLines:   100,
+					Coverage:     80.0,
+					Files:        make([]coverage.FileCoverage, 5),
+				},
+				Base:          nil,
+				CoverageDelta: 0,
+			},
+			contains: []string{"80.00%"},
+			excludes: []string{"(+", "(-"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := formatQuickSummaryWithDelta(tt.comp)
+
+			for _, check := range tt.contains {
+				if !strings.Contains(result, check) {
+					t.Errorf("missing %q in output", check)
+				}
+			}
+			for _, check := range tt.excludes {
+				if strings.Contains(result, check) {
+					t.Errorf("should not contain %q in output", check)
+				}
+			}
+		})
+	}
+}
+
+func TestFormatCoverageDiffWithComparison(t *testing.T) {
+	t.Run("with base", func(t *testing.T) {
+		comp := &coverage.Comparison{
+			Head: &coverage.Report{
+				TotalCovered: 260,
+				TotalLines:   300,
+				Coverage:     86.67,
+				Files:        make([]coverage.FileCoverage, 10),
+			},
+			Base: &coverage.Report{
+				TotalCovered: 200,
+				TotalLines:   250,
+				Coverage:     80.0,
+				Files:        make([]coverage.FileCoverage, 8),
+			},
+		}
+
+		opts := Options{
+			PRNumber:   42,
+			BaseBranch: "develop",
+		}
+
+		result := formatCoverageDiffWithComparison(comp, opts)
+
+		checks := []string{
+			"develop",
+			"#42",
+			"Coverage Diff",
+			"```diff",
+			"80.00%",
+			"86.67%",
+			"Hits",
+			"Misses",
+		}
+
+		for _, check := range checks {
+			if !strings.Contains(result, check) {
+				t.Errorf("missing %q in output", check)
+			}
+		}
+	})
+
+	t.Run("without base", func(t *testing.T) {
+		comp := &coverage.Comparison{
+			Head: &coverage.Report{
+				TotalCovered: 80,
+				TotalLines:   100,
+				Coverage:     80.0,
+				Files:        make([]coverage.FileCoverage, 5),
+			},
+			Base: nil,
+		}
+
+		opts := Options{}
+
+		result := formatCoverageDiffWithComparison(comp, opts)
+
+		if !strings.Contains(result, "80.00%") {
+			t.Error("missing coverage")
+		}
+		if !strings.Contains(result, "HEAD") {
+			t.Error("should use HEAD when no PR number")
+		}
+		if !strings.Contains(result, "main") {
+			t.Error("should default to main branch")
+		}
+	})
+}
+
+func TestFormatImpactedFilesWithDelta(t *testing.T) {
+	fileChanges := []coverage.FileChange{
+		{Path: "improved.go", HeadCoverage: 94.20, BaseCoverage: 92.10, Delta: 2.10, IsNew: false},
+		{Path: "new.go", HeadCoverage: 65.00, BaseCoverage: 0, Delta: 65.00, IsNew: true},
+		{Path: "same.go", HeadCoverage: 80.00, BaseCoverage: 80.00, Delta: 0, IsNew: false},
+		{Path: "worse.go", HeadCoverage: 70.00, BaseCoverage: 75.00, Delta: -5.00, IsNew: false},
+	}
+
+	opts := Options{
+		RepoURL: "https://github.com/test/repo",
+		SHA:     "abc123",
+	}
+
+	result := formatImpactedFilesWithDelta(fileChanges, opts)
+
+	checks := []string{
+		"Impacted Files (4)",
+		"\u0394",         // Delta column header
+		"`+2.10%`",       // positive delta
+		"`new`",          // new file indicator
+		"`\u00f8`",       // zero delta (ø)
+		"`-5.00%`",       // negative delta
+		"improved.go",
+		"new.go",
+		"same.go",
+		"worse.go",
+		"\u2705",         // checkmark
+		"\u26A0\uFE0F",   // warning
+	}
+
+	for _, check := range checks {
+		if !strings.Contains(result, check) {
+			t.Errorf("missing %q in output", check)
+		}
+	}
+}
+
+func TestFormatImpactedFilesWithDelta_Empty(t *testing.T) {
+	result := formatImpactedFilesWithDelta(nil, Options{})
+	if result != "" {
+		t.Error("expected empty string for no files")
+	}
+}
+
+func TestFormatFileDelta(t *testing.T) {
+	tests := []struct {
+		name     string
+		fc       coverage.FileChange
+		expected string
+	}{
+		{
+			name:     "new file",
+			fc:       coverage.FileChange{IsNew: true, Delta: 50.0},
+			expected: "`new`",
+		},
+		{
+			name:     "zero delta",
+			fc:       coverage.FileChange{IsNew: false, Delta: 0},
+			expected: "`\u00f8`",
+		},
+		{
+			name:     "positive delta",
+			fc:       coverage.FileChange{IsNew: false, Delta: 5.25},
+			expected: "`+5.25%`",
+		},
+		{
+			name:     "negative delta",
+			fc:       coverage.FileChange{IsNew: false, Delta: -3.50},
+			expected: "`-3.50%`",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := formatFileDelta(tt.fc)
+			if result != tt.expected {
+				t.Errorf("expected %s, got %s", tt.expected, result)
+			}
+		})
+	}
+}
+
+func TestFormatDeltaString(t *testing.T) {
+	tests := []struct {
+		name     string
+		delta    float64
+		hasBase  bool
+		expected string
+	}{
+		{
+			name:     "no base",
+			delta:    5.0,
+			hasBase:  false,
+			expected: "",
+		},
+		{
+			name:     "zero delta with base",
+			delta:    0,
+			hasBase:  true,
+			expected: "",
+		},
+		{
+			name:     "positive delta",
+			delta:    2.50,
+			hasBase:  true,
+			expected: " (+2.50%)",
+		},
+		{
+			name:     "negative delta",
+			delta:    -1.75,
+			hasBase:  true,
+			expected: " (-1.75%)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := formatDeltaString(tt.delta, tt.hasBase)
+			if result != tt.expected {
+				t.Errorf("expected %q, got %q", tt.expected, result)
+			}
+		})
 	}
 }
