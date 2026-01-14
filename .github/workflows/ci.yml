@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Run tests with coverage
+        run: go test ./... -coverprofile=coverage.out -covermode=atomic
+
+      - name: Convert coverage to Cobertura
+        run: |
+          go install github.com/boumenot/gocover-cobertura@latest
+          gocover-cobertura < coverage.out > coverage.xml
+
+      - name: Post coverage report
+        uses: ./
+        with:
+          coverage-file: coverage.xml
+          format: cobertura
+          show-files: all
+          title: LiteCov Coverage
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Build
+        run: go build -ldflags="-s -w" -o litecov ./cmd/litecov
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: litecov
+          path: litecov
