@@ -125,7 +125,9 @@ func main() {
 	}
 
 	if *annotations {
+		fmt.Fprintf(os.Stderr, "[ANNOTATIONS] Starting annotation output for %d files\n", len(report.Files))
 		outputAnnotations(report, changedFiles)
+		fmt.Fprintf(os.Stderr, "[ANNOTATIONS] Finished annotation output\n")
 	}
 
 	repoURL := fmt.Sprintf("https://github.com/%s", repository)
@@ -259,27 +261,28 @@ func outputAnnotations(report *coverage.Report, changedFiles []string) {
 		changedSet[f] = true
 	}
 
-	fmt.Printf("[DEBUG] outputAnnotations: %d files in coverage, %d changed files\n", len(report.Files), len(changedFiles))
+	fmt.Fprintf(os.Stderr, "[STDERR] outputAnnotations: %d files in coverage, %d changed files\n", len(report.Files), len(changedFiles))
 
 	annotationCount := 0
-	for _, file := range report.Files {
+	for i, file := range report.Files {
 		// Normalize path: strip Go module prefix to get repo-relative path
 		// Coverage paths may be like "github.com/user/repo/internal/foo.go"
 		// but we need "internal/foo.go" for GitHub annotations
 		relativePath := normalizePathForAnnotation(file.Path)
 
+		fmt.Fprintf(os.Stderr, "[STDERR] File[%d]: %s -> %s (uncovered: %d)\n", i, file.Path, relativePath, len(file.UncoveredLines))
+
 		// Check if file is in changed set (use normalized path for matching)
 		if len(changedFiles) > 0 && !isPathInChangedSet(relativePath, changedSet) {
+			fmt.Fprintf(os.Stderr, "[STDERR] Skipping %s (not in changed files)\n", relativePath)
 			continue
 		}
 
 		if len(file.UncoveredLines) == 0 {
-			fmt.Printf("  %s: 100%% covered\n", relativePath)
 			continue
 		}
 
 		ranges := comment.GroupConsecutiveLines(file.UncoveredLines)
-		fmt.Printf("  %s: %d uncovered ranges\n", relativePath, len(ranges))
 		for _, r := range ranges {
 			annotationCount++
 			if r.Start == r.End {
@@ -291,7 +294,7 @@ func outputAnnotations(report *coverage.Report, changedFiles []string) {
 			}
 		}
 	}
-	fmt.Printf("[DEBUG] Total annotations emitted: %d\n", annotationCount)
+	fmt.Fprintf(os.Stderr, "[STDERR] Total annotations emitted: %d\n", annotationCount)
 }
 
 // normalizePathForAnnotation converts a Go module path to a repo-relative path
