@@ -1,9 +1,6 @@
 #!/bin/sh
 set -e
 
-# Debug: Show annotation setting
-echo "INPUT_ANNOTATIONS=$INPUT_ANNOTATIONS"
-
 # Build args from environment variables
 ARGS=""
 
@@ -24,13 +21,13 @@ if [ -n "$INPUT_THRESHOLD" ]; then
 fi
 
 if [ -n "$INPUT_TITLE" ]; then
-    ARGS="$ARGS -title=$INPUT_TITLE"
+    # Quote the title in case it contains spaces
+    ARGS="$ARGS -title=\"$INPUT_TITLE\""
 fi
 
 if [ "$INPUT_ANNOTATIONS" = "true" ]; then
-    ARGS="$ARGS -annotations"
-    echo "Annotations enabled"
+    ARGS="$ARGS -annotations=true"
 fi
 
-echo "Running: /litecov $ARGS"
-exec /litecov $ARGS
+# Run with eval to properly expand quoted arguments
+eval /litecov $ARGS

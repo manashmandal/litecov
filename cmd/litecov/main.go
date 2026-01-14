@@ -260,7 +260,13 @@ func outputAnnotations(report *coverage.Report, changedFiles []string) {
 	}
 
 	for _, file := range report.Files {
-		if len(changedFiles) > 0 && !changedSet[file.Path] {
+		// Normalize path: strip Go module prefix to get repo-relative path
+		// Coverage paths may be like "github.com/user/repo/internal/foo.go"
+		// but we need "internal/foo.go" for GitHub annotations
+		relativePath := normalizePathForAnnotation(file.Path)
+
+		// Check if file is in changed set (use normalized path for matching)
+		if len(changedFiles) > 0 && !isPathInChangedSet(relativePath, changedSet) {
 			continue
 		}
 
@@ -272,11 +278,45 @@ func outputAnnotations(report *coverage.Report, changedFiles []string) {
 		for _, r := range ranges {
 			if r.Start == r.End {
 				fmt.Printf("::warning file=%s,line=%d,title=Uncovered::Line %d not covered by tests\n",
-					file.Path, r.Start, r.Start)
+					relativePath, r.Start, r.Start)
 			} else {
 				fmt.Printf("::warning file=%s,line=%d,endLine=%d,title=Uncovered::Lines %d-%d not covered by tests\n",
-					file.Path, r.Start, r.End, r.Start, r.End)
+					relativePath, r.Start, r.End, r.Start, r.End)
 			}
 		}
 	}
+}
+
+// normalizePathForAnnotation converts a Go module path to a repo-relative path
+// e.g., "github.com/user/repo/internal/foo.go" -> "internal/foo.go"
+func normalizePathForAnnotation(path string) string {
+	// Common Go module path patterns to strip
+	// Look for known directory markers that indicate repo structure
+	markers := []string{"/internal/", "/cmd/", "/pkg/", "/api/", "/test/", "/tests/"}
+	for _, marker := range markers {
+		if idx := strings.Index(path, marker); idx >= 0 {
+			return path[idx+1:] // +1 to skip the leading slash
+		}
+	}
+	// If no marker found but path contains github.com or similar,
+	// try to extract after the third slash (github.com/user/repo/...)
+	parts := strings.SplitN(path, "/", 4)
+	if len(parts) == 4 && (strings.Contains(parts[0], ".") || parts[0] == "github") {
+		return parts[3]
+	}
+	return path
+}
+
+// isPathInChangedSet checks if the given path matches any file in the changed set
+func isPathInChangedSet(path string, changedSet map[string]bool) bool {
+	if changedSet[path] {
+		return true
+	}
+	// Also try suffix matching for paths that may have different prefixes
+	for changedPath := range changedSet {
+		if strings.HasSuffix(path, changedPath) || strings.HasSuffix(changedPath, path) {
+			return true
+		}
+	}
+	return false
 }
