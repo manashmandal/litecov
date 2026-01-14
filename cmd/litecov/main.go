@@ -14,6 +14,7 @@ import (
 )
 
 func main() {
+	fmt.Println("LITECOV STARTED - V3")
 	coverageFile := flag.String("coverage-file", "", "Path to coverage report file")
 	format := flag.String("format", "auto", "Coverage format: auto, lcov, cobertura")
 	showFiles := flag.String("show-files", "changed", "Files to show: all, changed, threshold:N, worst:N")
@@ -23,6 +24,7 @@ func main() {
 	baseCoverageFile := flag.String("base-coverage-file", "", "Path to base branch coverage file for comparison")
 	baseBranch := flag.String("base-branch", "main", "Base branch name for comparison display")
 	flag.Parse()
+	fmt.Printf("LITECOV FLAGS PARSED - annotations=%v\n", *annotations)
 
 	// Environment variable overrides for GitHub Action
 	if *baseCoverageFile == "" {
