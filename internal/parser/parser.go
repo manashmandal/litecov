@@ -3,7 +3,7 @@ package parser
 import (
 	"io"
 
-	"github.com/litecov/litecov/internal/coverage"
+	"github.com/manashmandal/litecov/internal/coverage"
 )
 
 type Parser interface {

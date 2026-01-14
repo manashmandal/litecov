@@ -1,6 +1,6 @@
 name: 'LiteCov'
 description: 'Lightweight code coverage reporter - posts PR comments with coverage stats'
-author: 'litecov'
+author: 'Manash Kumar Mandal'
 
 branding:
   icon: 'check-circle'
@@ -26,6 +26,10 @@ inputs:
     description: 'Comment title'
     required: false
     default: 'Coverage Report'
+  annotations:
+    description: 'Output GitHub annotations for uncovered lines'
+    required: false
+    default: 'false'
   token:
     description: 'GitHub token'
     required: false
@@ -51,3 +55,4 @@ runs:
     INPUT_SHOW_FILES: ${{ inputs.show-files }}
     INPUT_THRESHOLD: ${{ inputs.threshold }}
     INPUT_TITLE: ${{ inputs.title }}
+    INPUT_ANNOTATIONS: ${{ inputs.annotations }}

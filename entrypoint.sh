@@ -24,4 +24,8 @@ if [ -n "$INPUT_TITLE" ]; then
     ARGS="$ARGS -title=$INPUT_TITLE"
 fi
 
+if [ "$INPUT_ANNOTATIONS" = "true" ]; then
+    ARGS="$ARGS -annotations"
+fi
+
 exec /litecov $ARGS

@@ -7,9 +7,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/litecov/litecov/internal/comment"
-	"github.com/litecov/litecov/internal/github"
-	"github.com/litecov/litecov/internal/parser"
+	"github.com/manashmandal/litecov/internal/comment"
+	"github.com/manashmandal/litecov/internal/coverage"
+	"github.com/manashmandal/litecov/internal/github"
+	"github.com/manashmandal/litecov/internal/parser"
 )
 
 func main() {
@@ -18,6 +19,7 @@ func main() {
 	showFiles := flag.String("show-files", "changed", "Files to show: all, changed, threshold:N, worst:N")
 	threshold := flag.Float64("threshold", 0, "Minimum coverage threshold for passing status")
 	title := flag.String("title", "Coverage Report", "Comment title")
+	annotations := flag.Bool("annotations", false, "Output GitHub annotations for uncovered lines")
 	flag.Parse()
 
 	token := os.Getenv("GITHUB_TOKEN")
@@ -83,6 +85,10 @@ func main() {
 		os.Exit(1)
 	}
 
+	if *annotations {
+		outputAnnotations(report)
+	}
+
 	gh := github.NewClient(token, owner, repo)
 
 	var changedFiles []string
@@ -93,10 +99,13 @@ func main() {
 		}
 	}
 
+	repoURL := fmt.Sprintf("https://github.com/%s", repository)
 	opts := comment.Options{
 		Title:        *title,
 		ShowFiles:    *showFiles,
 		ChangedFiles: changedFiles,
+		RepoURL:      repoURL,
+		SHA:          sha,
 	}
 	if strings.HasPrefix(*showFiles, "threshold:") {
 		val, _ := strconv.ParseFloat(strings.TrimPrefix(*showFiles, "threshold:"), 64)
@@ -204,4 +213,12 @@ func detectCoverageFile() string {
 		}
 	}
 	return ""
+}
+
+func outputAnnotations(report *coverage.Report) {
+	for _, file := range report.Files {
+		for _, line := range file.UncoveredLines {
+			fmt.Printf("::warning file=%s,line=%d::Line not covered by tests\n", file.Path, line)
+		}
+	}
 }

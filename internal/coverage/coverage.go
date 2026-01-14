@@ -1,9 +1,10 @@
 package coverage
 
 type FileCoverage struct {
-	Path         string
-	LinesCovered int
-	LinesTotal   int
+	Path           string
+	LinesCovered   int
+	LinesTotal     int
+	UncoveredLines []int
 }
 
 func (fc *FileCoverage) Percentage() float64 {

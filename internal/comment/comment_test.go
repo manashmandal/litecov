@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/litecov/litecov/internal/coverage"
+	"github.com/manashmandal/litecov/internal/coverage"
 )
 
 func TestFormat(t *testing.T) {
@@ -209,5 +209,101 @@ func TestFormat_HighCoverageNoWarning(t *testing.T) {
 
 	if strings.Contains(result, ":warning:") {
 		t.Error("should not have warning for high coverage file")
+	}
+}
+
+func TestFormat_WithHyperlinks(t *testing.T) {
+	report := &coverage.Report{
+		Files: []coverage.FileCoverage{
+			{Path: "src/parser.go", LinesCovered: 75, LinesTotal: 100, UncoveredLines: []int{10, 11, 12}},
+		},
+		TotalCovered: 75,
+		TotalLines:   100,
+		Coverage:     75.0,
+	}
+
+	opts := Options{
+		Title:     "Coverage Report",
+		ShowFiles: "all",
+		RepoURL:   "https://github.com/test/repo",
+		SHA:       "abc123",
+	}
+
+	result := Format(report, opts)
+
+	if !strings.Contains(result, "https://github.com/test/repo/blob/abc123/src/parser.go") {
+		t.Error("missing file hyperlink")
+	}
+	if !strings.Contains(result, "L10-12") {
+		t.Error("missing uncovered lines range")
+	}
+}
+
+func TestFormat_UncoveredLinesNoHyperlink(t *testing.T) {
+	report := &coverage.Report{
+		Files: []coverage.FileCoverage{
+			{Path: "test.go", LinesCovered: 80, LinesTotal: 100, UncoveredLines: []int{5, 10, 15}},
+		},
+	}
+
+	opts := Options{ShowFiles: "all"}
+	result := Format(report, opts)
+
+	if !strings.Contains(result, "L5") {
+		t.Error("missing uncovered line without hyperlink")
+	}
+}
+
+func TestFormat_NoUncoveredLines(t *testing.T) {
+	report := &coverage.Report{
+		Files: []coverage.FileCoverage{
+			{Path: "test.go", LinesCovered: 100, LinesTotal: 100, UncoveredLines: nil},
+		},
+	}
+
+	result := Format(report, Options{ShowFiles: "all"})
+
+	if !strings.Contains(result, "| - |") {
+		t.Error("should show dash for no uncovered lines")
+	}
+}
+
+func TestFormatUncoveredLines_Ranges(t *testing.T) {
+	lines := []int{1, 2, 3, 5, 7, 8, 9, 10}
+	result := formatUncoveredLines(lines, "", "", "")
+
+	if !strings.Contains(result, "L1-3") {
+		t.Error("missing range L1-3")
+	}
+	if !strings.Contains(result, "L5") {
+		t.Error("missing single L5")
+	}
+	if !strings.Contains(result, "L7-10") {
+		t.Error("missing range L7-10")
+	}
+}
+
+func TestFormatUncoveredLines_TooMany(t *testing.T) {
+	lines := []int{1, 3, 5, 7, 9, 11, 13, 15}
+	result := formatUncoveredLines(lines, "", "", "")
+
+	if !strings.Contains(result, "+3 more") {
+		t.Error("should truncate with 'more' indicator")
+	}
+}
+
+func TestFormatRange_WithHyperlink(t *testing.T) {
+	result := formatRange(10, 15, "https://github.com/test/repo", "abc123", "file.go")
+
+	if !strings.Contains(result, "https://github.com/test/repo/blob/abc123/file.go#L10-L15") {
+		t.Error("missing hyperlink in range")
+	}
+}
+
+func TestFormatRange_SingleLine(t *testing.T) {
+	result := formatRange(10, 10, "", "", "")
+
+	if result != "L10" {
+		t.Errorf("expected L10, got %s", result)
 	}
 }

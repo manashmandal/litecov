@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/litecov/litecov/internal/coverage"
+	"github.com/manashmandal/litecov/internal/coverage"
 )
 
 type LCOVParser struct{}
@@ -35,10 +35,13 @@ func (p *LCOVParser) Parse(r io.Reader) (*coverage.Report, error) {
 			}
 			parts := strings.Split(strings.TrimPrefix(line, "DA:"), ",")
 			if len(parts) >= 2 {
+				lineNum, _ := strconv.Atoi(parts[0])
 				hits, _ := strconv.Atoi(parts[1])
 				current.LinesTotal++
 				if hits > 0 {
 					current.LinesCovered++
+				} else {
+					current.UncoveredLines = append(current.UncoveredLines, lineNum)
 				}
 			}
 

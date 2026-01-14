@@ -1,3 +1,3 @@
-module github.com/litecov/litecov
+module github.com/manashmandal/litecov
 
 go 1.21

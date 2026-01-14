@@ -37,6 +37,7 @@ jobs:
           format: cobertura
           show-files: all
           title: LiteCov Coverage
+          annotations: 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
