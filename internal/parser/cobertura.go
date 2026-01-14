@@ -48,6 +48,7 @@ func (p *CoberturaParser) Parse(r io.Reader) (*coverage.Report, error) {
 				linesSeen[class.Filename] = make(map[int]bool)
 			}
 			for _, line := range class.Lines {
+				// Skip duplicate lines (same line number seen in multiple classes)
 				if linesSeen[class.Filename][line.Number] {
 					continue
 				}
