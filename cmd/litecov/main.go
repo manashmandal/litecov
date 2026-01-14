@@ -85,18 +85,18 @@ func main() {
 		os.Exit(1)
 	}
 
-	if *annotations {
-		outputAnnotations(report)
-	}
-
 	gh := github.NewClient(token, owner, repo)
 
 	var changedFiles []string
-	if *showFiles == "changed" && prNumber > 0 {
+	if (*showFiles == "changed" || *annotations) && prNumber > 0 {
 		changedFiles, err = gh.GetChangedFiles(prNumber)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: Failed to get changed files: %v\n", err)
 		}
+	}
+
+	if *annotations {
+		outputAnnotations(report, changedFiles)
 	}
 
 	repoURL := fmt.Sprintf("https://github.com/%s", repository)
@@ -215,10 +215,30 @@ func detectCoverageFile() string {
 	return ""
 }
 
-func outputAnnotations(report *coverage.Report) {
+func outputAnnotations(report *coverage.Report, changedFiles []string) {
+	changedSet := make(map[string]bool)
+	for _, f := range changedFiles {
+		changedSet[f] = true
+	}
+
 	for _, file := range report.Files {
-		for _, line := range file.UncoveredLines {
-			fmt.Printf("::warning file=%s,line=%d::Line not covered by tests\n", file.Path, line)
+		if len(changedFiles) > 0 && !changedSet[file.Path] {
+			continue
+		}
+
+		if len(file.UncoveredLines) == 0 {
+			continue
+		}
+
+		ranges := comment.GroupConsecutiveLines(file.UncoveredLines)
+		for _, r := range ranges {
+			if r.Start == r.End {
+				fmt.Printf("::warning file=%s,line=%d,title=Uncovered::Line %d not covered by tests\n",
+					file.Path, r.Start, r.Start)
+			} else {
+				fmt.Printf("::warning file=%s,line=%d,endLine=%d,title=Uncovered::Lines %d-%d not covered by tests\n",
+					file.Path, r.Start, r.End, r.Start, r.End)
+			}
 		}
 	}
 }
