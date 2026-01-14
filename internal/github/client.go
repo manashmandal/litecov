@@ -9,15 +9,13 @@ import (
 	"strings"
 )
 
-// Client handles GitHub API interactions
 type Client struct {
 	Token   string
 	Owner   string
 	Repo    string
-	BaseURL string // For testing, defaults to https://api.github.com
+	BaseURL string
 }
 
-// NewClient creates a new GitHub API client
 func NewClient(token, owner, repo string) *Client {
 	return &Client{
 		Token:   token,
@@ -28,8 +26,7 @@ func NewClient(token, owner, repo string) *Client {
 }
 
 func (c *Client) doRequest(method, path string, body io.Reader) (*http.Response, error) {
-	url := c.BaseURL + path
-	req, err := http.NewRequest(method, url, body)
+	req, err := http.NewRequest(method, c.BaseURL+path, body)
 	if err != nil {
 		return nil, err
 	}
@@ -43,7 +40,6 @@ func (c *Client) doRequest(method, path string, body io.Reader) (*http.Response,
 	return http.DefaultClient.Do(req)
 }
 
-// GetChangedFiles returns the list of files changed in a PR
 func (c *Client) GetChangedFiles(prNumber int) ([]string, error) {
 	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/files", c.Owner, c.Repo, prNumber)
 	resp, err := c.doRequest("GET", path, nil)
@@ -71,7 +67,6 @@ func (c *Client) GetChangedFiles(prNumber int) ([]string, error) {
 	return result, nil
 }
 
-// FindExistingComment looks for an existing comment with the given marker
 func (c *Client) FindExistingComment(prNumber int, marker string) (int, error) {
 	path := fmt.Sprintf("/repos/%s/%s/issues/%d/comments", c.Owner, c.Repo, prNumber)
 	resp, err := c.doRequest("GET", path, nil)
@@ -101,13 +96,11 @@ func (c *Client) FindExistingComment(prNumber int, marker string) (int, error) {
 	return 0, nil
 }
 
-// CreateComment creates a new comment on a PR
 func (c *Client) CreateComment(prNumber int, body string) error {
 	path := fmt.Sprintf("/repos/%s/%s/issues/%d/comments", c.Owner, c.Repo, prNumber)
-	payload := map[string]string{"body": body}
-	jsonBody, _ := json.Marshal(payload)
+	payload, _ := json.Marshal(map[string]string{"body": body})
 
-	resp, err := c.doRequest("POST", path, bytes.NewReader(jsonBody))
+	resp, err := c.doRequest("POST", path, bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}
@@ -120,13 +113,11 @@ func (c *Client) CreateComment(prNumber int, body string) error {
 	return nil
 }
 
-// UpdateComment updates an existing comment
 func (c *Client) UpdateComment(commentID int, body string) error {
 	path := fmt.Sprintf("/repos/%s/%s/issues/comments/%d", c.Owner, c.Repo, commentID)
-	payload := map[string]string{"body": body}
-	jsonBody, _ := json.Marshal(payload)
+	payload, _ := json.Marshal(map[string]string{"body": body})
 
-	resp, err := c.doRequest("PATCH", path, bytes.NewReader(jsonBody))
+	resp, err := c.doRequest("PATCH", path, bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}
@@ -139,17 +130,15 @@ func (c *Client) UpdateComment(commentID int, body string) error {
 	return nil
 }
 
-// SetCommitStatus sets the commit status for a SHA
 func (c *Client) SetCommitStatus(sha, state, description, context string) error {
 	path := fmt.Sprintf("/repos/%s/%s/statuses/%s", c.Owner, c.Repo, sha)
-	payload := map[string]string{
+	payload, _ := json.Marshal(map[string]string{
 		"state":       state,
 		"description": description,
 		"context":     context,
-	}
-	jsonBody, _ := json.Marshal(payload)
+	})
 
-	resp, err := c.doRequest("POST", path, bytes.NewReader(jsonBody))
+	resp, err := c.doRequest("POST", path, bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}

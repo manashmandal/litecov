@@ -7,10 +7,8 @@ import (
 	"github.com/litecov/litecov/internal/coverage"
 )
 
-// CoberturaParser parses Cobertura XML format coverage reports
 type CoberturaParser struct{}
 
-// coberturaXML represents the Cobertura XML structure
 type coberturaXML struct {
 	XMLName  xml.Name           `xml:"coverage"`
 	Packages []coberturaPackage `xml:"packages>package"`
@@ -32,11 +30,9 @@ type coberturaLine struct {
 	Hits   int `xml:"hits,attr"`
 }
 
-// Parse reads Cobertura XML format and returns a coverage report
 func (p *CoberturaParser) Parse(r io.Reader) (*coverage.Report, error) {
 	var cov coberturaXML
-	decoder := xml.NewDecoder(r)
-	if err := decoder.Decode(&cov); err != nil {
+	if err := xml.NewDecoder(r).Decode(&cov); err != nil {
 		return nil, err
 	}
 

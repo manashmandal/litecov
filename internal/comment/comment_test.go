@@ -25,37 +25,38 @@ func TestFormat(t *testing.T) {
 
 	result := Format(report, opts)
 
-	// Check header
-	if !strings.Contains(result, "## Coverage Report") {
-		t.Error("missing title header")
+	checks := []string{
+		"## Coverage Report",
+		"57.50%",
+		"115/200",
+		"src/parser.go",
+		"src/utils.go",
+		":warning:",
+		Marker,
 	}
 
-	// Check coverage percentage
-	if !strings.Contains(result, "57.50%") {
-		t.Error("missing coverage percentage")
+	for _, check := range checks {
+		if !strings.Contains(result, check) {
+			t.Errorf("missing %q in output", check)
+		}
+	}
+}
+
+func TestFormat_NoFiles(t *testing.T) {
+	report := &coverage.Report{
+		Files:        []coverage.FileCoverage{},
+		TotalCovered: 0,
+		TotalLines:   0,
+		Coverage:     0,
 	}
 
-	// Check lines ratio
-	if !strings.Contains(result, "115/200") {
-		t.Error("missing lines ratio")
-	}
+	result := Format(report, Options{Title: "Test", ShowFiles: "all"})
 
-	// Check files are listed
-	if !strings.Contains(result, "src/parser.go") {
-		t.Error("missing parser.go file")
+	if !strings.Contains(result, "## Test") {
+		t.Error("missing title")
 	}
-	if !strings.Contains(result, "src/utils.go") {
-		t.Error("missing utils.go file")
-	}
-
-	// Check warning indicator for low coverage file
-	if !strings.Contains(result, ":warning:") {
-		t.Error("missing warning indicator for low coverage file")
-	}
-
-	// Check marker for comment updates
-	if !strings.Contains(result, "<!-- litecov -->") {
-		t.Error("missing litecov marker")
+	if strings.Contains(result, "| File |") {
+		t.Error("should not have file table when no files")
 	}
 }
 
@@ -90,6 +91,21 @@ func TestFormat_FilterChanged(t *testing.T) {
 	}
 }
 
+func TestFormat_ChangedNoFilter(t *testing.T) {
+	report := &coverage.Report{
+		Files: []coverage.FileCoverage{
+			{Path: "src/a.go", LinesCovered: 50, LinesTotal: 100},
+		},
+	}
+
+	opts := Options{ShowFiles: "changed", ChangedFiles: nil}
+	result := Format(report, opts)
+
+	if !strings.Contains(result, "src/a.go") {
+		t.Error("should show all files when ChangedFiles is empty")
+	}
+}
+
 func TestFormat_Threshold(t *testing.T) {
 	report := &coverage.Report{
 		Files: []coverage.FileCoverage{
@@ -109,7 +125,6 @@ func TestFormat_Threshold(t *testing.T) {
 
 	result := Format(report, opts)
 
-	// Only bad.go should be shown (below 50%)
 	if strings.Contains(result, "src/good.go") {
 		t.Error("should not contain file above threshold")
 	}
@@ -139,7 +154,6 @@ func TestFormat_Worst(t *testing.T) {
 
 	result := Format(report, opts)
 
-	// Only the 2 worst files should be shown
 	if strings.Contains(result, "src/best.go") {
 		t.Error("should not contain best file")
 	}
@@ -151,5 +165,49 @@ func TestFormat_Worst(t *testing.T) {
 	}
 	if !strings.Contains(result, "src/ok.go") {
 		t.Error("missing second worst file")
+	}
+}
+
+func TestFormat_WorstMoreThanFiles(t *testing.T) {
+	report := &coverage.Report{
+		Files: []coverage.FileCoverage{
+			{Path: "a.go", LinesCovered: 50, LinesTotal: 100},
+		},
+	}
+
+	opts := Options{ShowFiles: "worst:10", WorstN: 10}
+	result := Format(report, opts)
+
+	if !strings.Contains(result, "a.go") {
+		t.Error("should show all files when WorstN > len(files)")
+	}
+}
+
+func TestFormat_DefaultFilter(t *testing.T) {
+	report := &coverage.Report{
+		Files: []coverage.FileCoverage{
+			{Path: "a.go", LinesCovered: 50, LinesTotal: 100},
+		},
+	}
+
+	opts := Options{ShowFiles: "unknown"}
+	result := Format(report, opts)
+
+	if !strings.Contains(result, "a.go") {
+		t.Error("default filter should return all files")
+	}
+}
+
+func TestFormat_HighCoverageNoWarning(t *testing.T) {
+	report := &coverage.Report{
+		Files: []coverage.FileCoverage{
+			{Path: "good.go", LinesCovered: 80, LinesTotal: 100},
+		},
+	}
+
+	result := Format(report, Options{ShowFiles: "all"})
+
+	if strings.Contains(result, ":warning:") {
+		t.Error("should not have warning for high coverage file")
 	}
 }

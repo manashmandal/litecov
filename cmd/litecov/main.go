@@ -13,7 +13,6 @@ import (
 )
 
 func main() {
-	// Flags
 	coverageFile := flag.String("coverage-file", "", "Path to coverage report file")
 	format := flag.String("format", "auto", "Coverage format: auto, lcov, cobertura")
 	showFiles := flag.String("show-files", "changed", "Files to show: all, changed, threshold:N, worst:N")
@@ -21,9 +20,8 @@ func main() {
 	title := flag.String("title", "Coverage Report", "Comment title")
 	flag.Parse()
 
-	// Get GitHub context from environment
 	token := os.Getenv("GITHUB_TOKEN")
-	repository := os.Getenv("GITHUB_REPOSITORY") // owner/repo
+	repository := os.Getenv("GITHUB_REPOSITORY")
 	eventPath := os.Getenv("GITHUB_EVENT_PATH")
 	sha := os.Getenv("GITHUB_SHA")
 
@@ -32,7 +30,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Parse repository
 	parts := strings.Split(repository, "/")
 	if len(parts) != 2 {
 		fmt.Fprintf(os.Stderr, "Invalid GITHUB_REPOSITORY: %s\n", repository)
@@ -40,14 +37,12 @@ func main() {
 	}
 	owner, repo := parts[0], parts[1]
 
-	// Get PR number from event
 	prNumber, err := getPRNumber(eventPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to get PR number: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Auto-detect coverage file if not specified
 	if *coverageFile == "" {
 		*coverageFile = detectCoverageFile()
 		if *coverageFile == "" {
@@ -57,7 +52,6 @@ func main() {
 		fmt.Printf("Auto-detected coverage file: %s\n", *coverageFile)
 	}
 
-	// Open and parse coverage file
 	f, err := os.Open(*coverageFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to open coverage file: %v\n", err)
@@ -65,7 +59,6 @@ func main() {
 	}
 	defer f.Close()
 
-	// Detect format if auto
 	var p parser.Parser
 	if *format == "auto" {
 		detected, err := parser.DetectFormat(f)
@@ -74,7 +67,7 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Printf("Detected format: %s\n", detected)
-		f.Seek(0, 0) // Reset file pointer
+		f.Seek(0, 0)
 		p, _ = parser.GetParser(detected)
 	} else {
 		p, err = parser.GetParser(*format)
@@ -90,10 +83,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Create GitHub client
 	gh := github.NewClient(token, owner, repo)
 
-	// Get changed files if needed
 	var changedFiles []string
 	if *showFiles == "changed" && prNumber > 0 {
 		changedFiles, err = gh.GetChangedFiles(prNumber)
@@ -102,7 +93,6 @@ func main() {
 		}
 	}
 
-	// Parse show-files options
 	opts := comment.Options{
 		Title:        *title,
 		ShowFiles:    *showFiles,
@@ -117,12 +107,10 @@ func main() {
 		opts.WorstN = val
 	}
 
-	// Format comment
 	commentBody := comment.Format(report, opts)
 
-	// Post or update comment
 	if prNumber > 0 {
-		existingID, _ := gh.FindExistingComment(prNumber, comment.GetMarker())
+		existingID, _ := gh.FindExistingComment(prNumber, comment.Marker)
 		if existingID > 0 {
 			fmt.Printf("Updating existing comment (ID: %d)\n", existingID)
 			err = gh.UpdateComment(existingID, commentBody)
@@ -139,7 +127,6 @@ func main() {
 		fmt.Println("No PR number found, skipping comment")
 	}
 
-	// Set commit status
 	if sha != "" {
 		state := "success"
 		description := fmt.Sprintf("%.2f%% coverage", report.Coverage)
@@ -154,12 +141,10 @@ func main() {
 		}
 	}
 
-	// Output results
 	fmt.Printf("\nCoverage: %.2f%%\n", report.Coverage)
 	fmt.Printf("Lines: %d/%d\n", report.TotalCovered, report.TotalLines)
 	fmt.Printf("Files: %d\n", len(report.Files))
 
-	// Set outputs for GitHub Actions
 	if ghOutput := os.Getenv("GITHUB_OUTPUT"); ghOutput != "" {
 		f, err := os.OpenFile(ghOutput, os.O_APPEND|os.O_WRONLY, 0644)
 		if err == nil {
@@ -171,7 +156,6 @@ func main() {
 		}
 	}
 
-	// Exit with failure if below threshold
 	if *threshold > 0 && report.Coverage < *threshold {
 		fmt.Fprintf(os.Stderr, "\nCoverage %.2f%% is below threshold %.2f%%\n", report.Coverage, *threshold)
 		os.Exit(1)
@@ -184,14 +168,12 @@ func getPRNumber(eventPath string) (int, error) {
 	}
 	data, err := os.ReadFile(eventPath)
 	if err != nil {
-		return 0, nil // Not an error if file doesn't exist
+		return 0, nil
 	}
-	// Simple JSON parsing for PR number
+
 	content := string(data)
-	// Look for "number": N in pull_request context
 	if idx := strings.Index(content, `"number":`); idx >= 0 {
 		start := idx + 9
-		// Skip whitespace
 		for start < len(content) && (content[start] == ' ' || content[start] == '\t') {
 			start++
 		}

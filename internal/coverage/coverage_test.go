@@ -28,7 +28,7 @@ func TestFileCoverage_Percentage(t *testing.T) {
 	}
 }
 
-func TestReport_Percentage(t *testing.T) {
+func TestReport_Calculate(t *testing.T) {
 	report := &Report{
 		Files: []FileCoverage{
 			{Path: "a.go", LinesCovered: 80, LinesTotal: 100},
@@ -45,5 +45,33 @@ func TestReport_Percentage(t *testing.T) {
 	}
 	if report.Coverage != 50.0 {
 		t.Errorf("Coverage = %v, want 50.0", report.Coverage)
+	}
+}
+
+func TestReport_Calculate_Empty(t *testing.T) {
+	report := &Report{Files: []FileCoverage{}}
+	report.Calculate()
+
+	if report.TotalCovered != 0 {
+		t.Errorf("TotalCovered = %v, want 0", report.TotalCovered)
+	}
+	if report.TotalLines != 0 {
+		t.Errorf("TotalLines = %v, want 0", report.TotalLines)
+	}
+	if report.Coverage != 0 {
+		t.Errorf("Coverage = %v, want 0", report.Coverage)
+	}
+}
+
+func TestReport_Calculate_SingleFile(t *testing.T) {
+	report := &Report{
+		Files: []FileCoverage{
+			{Path: "single.go", LinesCovered: 75, LinesTotal: 100},
+		},
+	}
+	report.Calculate()
+
+	if report.Coverage != 75.0 {
+		t.Errorf("Coverage = %v, want 75.0", report.Coverage)
 	}
 }

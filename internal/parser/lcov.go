@@ -9,10 +9,8 @@ import (
 	"github.com/litecov/litecov/internal/coverage"
 )
 
-// LCOVParser parses LCOV format coverage reports
 type LCOVParser struct{}
 
-// Parse reads LCOV format and returns a coverage report
 func (p *LCOVParser) Parse(r io.Reader) (*coverage.Report, error) {
 	report := &coverage.Report{}
 	scanner := bufio.NewScanner(r)
@@ -27,13 +25,11 @@ func (p *LCOVParser) Parse(r io.Reader) (*coverage.Report, error) {
 
 		switch {
 		case strings.HasPrefix(line, "SF:"):
-			// Start of new file
 			current = &coverage.FileCoverage{
 				Path: strings.TrimPrefix(line, "SF:"),
 			}
 
 		case strings.HasPrefix(line, "DA:"):
-			// Line data: DA:line_number,hit_count
 			if current == nil {
 				continue
 			}
@@ -47,7 +43,6 @@ func (p *LCOVParser) Parse(r io.Reader) (*coverage.Report, error) {
 			}
 
 		case strings.HasPrefix(line, "LF:"):
-			// Lines found (total) - we calculate ourselves, but validate
 			if current != nil {
 				lf, _ := strconv.Atoi(strings.TrimPrefix(line, "LF:"))
 				if lf > 0 && current.LinesTotal != lf {
@@ -56,7 +51,6 @@ func (p *LCOVParser) Parse(r io.Reader) (*coverage.Report, error) {
 			}
 
 		case strings.HasPrefix(line, "LH:"):
-			// Lines hit (covered) - we calculate ourselves, but validate
 			if current != nil {
 				lh, _ := strconv.Atoi(strings.TrimPrefix(line, "LH:"))
 				if lh > 0 && current.LinesCovered != lh {
@@ -65,7 +59,6 @@ func (p *LCOVParser) Parse(r io.Reader) (*coverage.Report, error) {
 			}
 
 		case line == "end_of_record":
-			// End of file record
 			if current != nil {
 				report.Files = append(report.Files, *current)
 				current = nil
