@@ -1,0 +1,53 @@
+name: 'LiteCov'
+description: 'Lightweight code coverage reporter - posts PR comments with coverage stats'
+author: 'litecov'
+
+branding:
+  icon: 'check-circle'
+  color: 'green'
+
+inputs:
+  coverage-file:
+    description: 'Path to coverage report file (auto-detected if not specified)'
+    required: false
+  format:
+    description: 'Coverage format: auto, lcov, cobertura'
+    required: false
+    default: 'auto'
+  show-files:
+    description: 'Files to show: all, changed, threshold:N, worst:N'
+    required: false
+    default: 'changed'
+  threshold:
+    description: 'Minimum coverage threshold for passing status (0-100)'
+    required: false
+    default: '0'
+  title:
+    description: 'Comment title'
+    required: false
+    default: 'Coverage Report'
+  token:
+    description: 'GitHub token'
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  coverage:
+    description: 'Total coverage percentage'
+  lines-covered:
+    description: 'Number of covered lines'
+  lines-total:
+    description: 'Total number of lines'
+  files-count:
+    description: 'Number of files with coverage data'
+
+runs:
+  using: 'docker'
+  image: 'Dockerfile'
+  env:
+    GITHUB_TOKEN: ${{ inputs.token }}
+    INPUT_COVERAGE_FILE: ${{ inputs.coverage-file }}
+    INPUT_FORMAT: ${{ inputs.format }}
+    INPUT_SHOW_FILES: ${{ inputs.show-files }}
+    INPUT_THRESHOLD: ${{ inputs.threshold }}
+    INPUT_TITLE: ${{ inputs.title }}
