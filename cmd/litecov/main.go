@@ -125,7 +125,9 @@ func main() {
 	}
 
 	if *annotations {
+		fmt.Println("[DEBUG] Before outputAnnotations")
 		outputAnnotations(report, changedFiles)
+		fmt.Println("[DEBUG] After outputAnnotations")
 	}
 
 	repoURL := fmt.Sprintf("https://github.com/%s", repository)
@@ -259,6 +261,8 @@ func outputAnnotations(report *coverage.Report, changedFiles []string) {
 		changedSet[f] = true
 	}
 
+	// Force immediate output by using Println (which flushes)
+	fmt.Println("[DEBUG] outputAnnotations called")
 	fmt.Printf("Annotation check: %d files in coverage, %d changed files\n", len(report.Files), len(changedFiles))
 
 	annotationCount := 0
