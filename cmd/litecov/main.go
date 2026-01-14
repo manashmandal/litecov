@@ -259,17 +259,22 @@ func outputAnnotations(report *coverage.Report, changedFiles []string) {
 		changedSet[f] = true
 	}
 
+	fmt.Printf("Annotation check: %d files in coverage, %d changed files\n", len(report.Files), len(changedFiles))
+
+	annotationCount := 0
 	for _, file := range report.Files {
 		if len(changedFiles) > 0 && !changedSet[file.Path] {
 			continue
 		}
 
 		if len(file.UncoveredLines) == 0 {
+			fmt.Printf("  %s: 100%% covered (no annotations needed)\n", file.Path)
 			continue
 		}
 
 		ranges := comment.GroupConsecutiveLines(file.UncoveredLines)
 		for _, r := range ranges {
+			annotationCount++
 			if r.Start == r.End {
 				fmt.Printf("::warning file=%s,line=%d,title=Uncovered::Line %d not covered by tests\n",
 					file.Path, r.Start, r.Start)
@@ -279,4 +284,5 @@ func outputAnnotations(report *coverage.Report, changedFiles []string) {
 			}
 		}
 	}
+	fmt.Printf("Total annotations: %d\n", annotationCount)
 }
