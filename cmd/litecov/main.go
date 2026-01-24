@@ -259,6 +259,9 @@ func outputAnnotations(report *coverage.Report, changedFiles []string) {
 		changedSet[f] = true
 	}
 
+	// Track which changed files have coverage data
+	coveredChangedFiles := make(map[string]bool)
+
 	for _, file := range report.Files {
 		// Normalize path: strip Go module prefix to get repo-relative path
 		// Coverage paths may be like "github.com/user/repo/internal/foo.go"
@@ -266,24 +269,47 @@ func outputAnnotations(report *coverage.Report, changedFiles []string) {
 		relativePath := normalizePathForAnnotation(file.Path)
 
 		// Check if file is in changed set (use normalized path for matching)
-		if len(changedFiles) > 0 && !isPathInChangedSet(relativePath, changedSet) {
-			continue
+		matchedPath := ""
+		if len(changedFiles) > 0 {
+			matchedPath = findMatchingChangedFile(relativePath, changedSet)
+			if matchedPath == "" {
+				continue
+			}
+			coveredChangedFiles[matchedPath] = true
 		}
 
 		if len(file.UncoveredLines) == 0 {
 			continue
 		}
 
+		annotationPath := relativePath
+		if matchedPath != "" {
+			annotationPath = matchedPath
+		}
+
 		ranges := comment.GroupConsecutiveLines(file.UncoveredLines)
 		for _, r := range ranges {
 			if r.Start == r.End {
 				fmt.Printf("::warning file=%s,line=%d,title=Uncovered::Line %d not covered by tests\n",
-					relativePath, r.Start, r.Start)
+					annotationPath, r.Start, r.Start)
 			} else {
 				fmt.Printf("::warning file=%s,line=%d,endLine=%d,title=Uncovered::Lines %d-%d not covered by tests\n",
-					relativePath, r.Start, r.End, r.Start, r.End)
+					annotationPath, r.Start, r.End, r.Start, r.End)
 			}
 		}
+	}
+
+	// Output annotations for changed files that have no coverage data at all
+	// These are files that were never executed by any test
+	for _, changedFile := range changedFiles {
+		if coveredChangedFiles[changedFile] {
+			continue
+		}
+		// Only annotate source files (skip test files, configs, etc.)
+		if !isSourceFile(changedFile) {
+			continue
+		}
+		fmt.Printf("::warning file=%s,line=1,title=No Coverage::File has no test coverage\n", changedFile)
 	}
 }
 
@@ -319,4 +345,39 @@ func isPathInChangedSet(path string, changedSet map[string]bool) bool {
 		}
 	}
 	return false
+}
+
+// findMatchingChangedFile returns the matching changed file path, or empty string if not found
+func findMatchingChangedFile(coveragePath string, changedSet map[string]bool) string {
+	if changedSet[coveragePath] {
+		return coveragePath
+	}
+	// Try suffix matching for paths that may have different prefixes
+	for changedPath := range changedSet {
+		if strings.HasSuffix(coveragePath, changedPath) || strings.HasSuffix(changedPath, coveragePath) {
+			return changedPath
+		}
+	}
+	return ""
+}
+
+// isSourceFile checks if a file is a source file that should have coverage
+func isSourceFile(path string) bool {
+	// Only check Go files for now (can be extended for other languages)
+	if !strings.HasSuffix(path, ".go") {
+		return false
+	}
+	// Skip test files
+	if strings.HasSuffix(path, "_test.go") {
+		return false
+	}
+	// Skip generated files (common patterns)
+	if strings.Contains(path, "/vendor/") ||
+		strings.Contains(path, "generated") ||
+		strings.Contains(path, ".pb.go") ||
+		strings.Contains(path, "_mock.go") ||
+		strings.Contains(path, "mock_") {
+		return false
+	}
+	return true
 }

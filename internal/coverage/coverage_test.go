@@ -284,9 +284,9 @@ func TestNewComparison_EmptyChangedFiles(t *testing.T) {
 
 func TestFileChange_Delta(t *testing.T) {
 	tests := []struct {
-		name         string
-		headCoverage float64
-		baseCoverage float64
+		name          string
+		headCoverage  float64
+		baseCoverage  float64
 		expectedDelta float64
 	}{
 		{"improved", 90.0, 80.0, 10.0},
@@ -304,6 +304,111 @@ func TestFileChange_Delta(t *testing.T) {
 			}
 			if fc.Delta != tt.expectedDelta {
 				t.Errorf("Delta = %v, want %v", fc.Delta, tt.expectedDelta)
+			}
+		})
+	}
+}
+
+func TestNewComparison_MissingFiles(t *testing.T) {
+	head := &Report{
+		Files: []FileCoverage{
+			{Path: "internal/foo/a.go", LinesCovered: 90, LinesTotal: 100},
+		},
+		Coverage: 90.0,
+	}
+
+	// Changed files include files not in the coverage report
+	changedFiles := []string{"internal/foo/a.go", "cmd/app/main.go", "internal/bar/b.go"}
+	comp := NewComparison(head, nil, changedFiles)
+
+	// Should have 3 file changes: 1 covered + 2 missing
+	if len(comp.FileChanges) != 3 {
+		t.Errorf("FileChanges length = %v, want 3", len(comp.FileChanges))
+	}
+
+	// Find the missing files
+	var missingCount int
+	for _, fc := range comp.FileChanges {
+		if fc.NoCoverage {
+			missingCount++
+			if fc.HeadCoverage != 0 {
+				t.Errorf("Missing file %s HeadCoverage = %v, want 0", fc.Path, fc.HeadCoverage)
+			}
+		}
+	}
+	if missingCount != 2 {
+		t.Errorf("Missing files count = %v, want 2", missingCount)
+	}
+}
+
+func TestNewComparison_MissingFiles_SkipsTestFiles(t *testing.T) {
+	head := &Report{
+		Files:    []FileCoverage{},
+		Coverage: 0,
+	}
+
+	// Changed files include test files which should be skipped
+	changedFiles := []string{"internal/foo/a.go", "internal/foo/a_test.go", "cmd/app/main_test.go"}
+	comp := NewComparison(head, nil, changedFiles)
+
+	// Should only have 1 file change (test files are skipped)
+	if len(comp.FileChanges) != 1 {
+		t.Errorf("FileChanges length = %v, want 1 (test files should be skipped)", len(comp.FileChanges))
+	}
+	if comp.FileChanges[0].Path != "internal/foo/a.go" {
+		t.Errorf("FileChanges[0].Path = %v, want internal/foo/a.go", comp.FileChanges[0].Path)
+	}
+}
+
+func TestIsSourceFile(t *testing.T) {
+	tests := []struct {
+		path     string
+		expected bool
+	}{
+		{"cmd/app/main.go", true},
+		{"internal/foo/bar.go", true},
+		{"pkg/util/helper.go", true},
+		{"cmd/app/main_test.go", false},
+		{"internal/foo/bar_test.go", false},
+		{".github/workflows/ci.yml", false},
+		{"README.md", false},
+		{"vendor/github.com/pkg/errors/errors.go", false},
+		{"internal/generated/code.go", false},
+		{"api/v1/types.pb.go", false},
+		{"internal/mocks/mock_service.go", false},
+		{"internal/test/service_mock.go", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			if got := isSourceFile(tt.path); got != tt.expected {
+				t.Errorf("isSourceFile(%q) = %v, want %v", tt.path, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestFindMatchingChangedFile(t *testing.T) {
+	changedSet := map[string]bool{
+		"cmd/app/main.go":        true,
+		"internal/foo/handler.go": true,
+	}
+
+	tests := []struct {
+		coveragePath string
+		expected     string
+	}{
+		{"cmd/app/main.go", "cmd/app/main.go"},
+		{"github.com/user/repo/cmd/app/main.go", "cmd/app/main.go"},
+		{"internal/foo/handler.go", "internal/foo/handler.go"},
+		{"github.com/user/repo/internal/foo/handler.go", "internal/foo/handler.go"},
+		{"internal/other/file.go", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.coveragePath, func(t *testing.T) {
+			if got := findMatchingChangedFile(tt.coveragePath, changedSet); got != tt.expected {
+				t.Errorf("findMatchingChangedFile(%q) = %q, want %q", tt.coveragePath, got, tt.expected)
 			}
 		})
 	}
