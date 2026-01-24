@@ -33,11 +33,75 @@ func Format(report *coverage.Report, opts Options) string {
 	sb.WriteString(formatCoverageDiff(report))
 
 	filesToShow := filterFiles(report.Files, opts)
+
+	// Add files with no coverage when showing changed files
+	if opts.ShowFiles == "changed" && len(opts.ChangedFiles) > 0 {
+		missingFiles := findMissingFiles(report, opts.ChangedFiles)
+		for _, path := range missingFiles {
+			filesToShow = append(filesToShow, coverage.FileCoverage{
+				Path:         path,
+				LinesCovered: 0,
+				LinesTotal:   0,
+			})
+		}
+	}
+
 	sb.WriteString(formatImpactedFiles(filesToShow, opts))
 
 	sb.WriteString(formatFooter())
 
 	return sb.String()
+}
+
+// findMissingFiles returns changed source files that are not in the coverage report
+func findMissingFiles(report *coverage.Report, changedFiles []string) []string {
+	// Build map of covered files
+	coveredPaths := make(map[string]bool)
+	for _, f := range report.Files {
+		coveredPaths[f.Path] = true
+		// Also add normalized paths for suffix matching
+	}
+
+	var missing []string
+	for _, changedFile := range changedFiles {
+		if !isSourceFileForComment(changedFile) {
+			continue
+		}
+		// Check if file is in coverage report (direct or suffix match)
+		found := false
+		if coveredPaths[changedFile] {
+			found = true
+		} else {
+			for coveredPath := range coveredPaths {
+				if strings.HasSuffix(coveredPath, changedFile) || strings.HasSuffix(changedFile, coveredPath) {
+					found = true
+					break
+				}
+			}
+		}
+		if !found {
+			missing = append(missing, changedFile)
+		}
+	}
+	return missing
+}
+
+// isSourceFileForComment checks if a file should be shown in coverage report
+func isSourceFileForComment(path string) bool {
+	if !strings.HasSuffix(path, ".go") {
+		return false
+	}
+	if strings.HasSuffix(path, "_test.go") {
+		return false
+	}
+	if strings.Contains(path, "/vendor/") ||
+		strings.Contains(path, "generated") ||
+		strings.Contains(path, ".pb.go") ||
+		strings.Contains(path, "_mock.go") ||
+		strings.Contains(path, "mock_") {
+		return false
+	}
+	return true
 }
 
 func FormatWithComparison(comp *coverage.Comparison, opts Options) string {
@@ -210,7 +274,13 @@ func formatImpactedFiles(files []coverage.FileCoverage, opts Options) string {
 		pct := f.Percentage()
 		emoji := getStatusEmoji(pct)
 		fileName := formatFileName(f.Path, opts)
-		sb.WriteString(fmt.Sprintf("| %s | `%.2f%%` | %s |\n", fileName, pct, emoji))
+		coverageStr := fmt.Sprintf("`%.2f%%`", pct)
+		// Mark files with no coverage data
+		if f.LinesTotal == 0 {
+			coverageStr = "`⚠️ no tests`"
+			emoji = "❌"
+		}
+		sb.WriteString(fmt.Sprintf("| %s | %s | %s |\n", fileName, coverageStr, emoji))
 	}
 
 	sb.WriteString("\n</details>\n\n")
@@ -243,11 +313,14 @@ func formatImpactedFilesWithDelta(fileChanges []coverage.FileChange, opts Option
 }
 
 func formatFileDelta(fc coverage.FileChange) string {
+	if fc.NoCoverage {
+		return "`⚠️ no tests`"
+	}
 	if fc.IsNew {
 		return "`new`"
 	}
 	if fc.Delta == 0 {
-		return "`\u00f8`"
+		return "`ø`"
 	}
 	if fc.Delta > 0 {
 		return fmt.Sprintf("`+%.2f%%`", fc.Delta)
