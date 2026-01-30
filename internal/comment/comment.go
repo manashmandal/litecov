@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/manashmandal/litecov/internal/coverage"
+	"github.com/manashmandal/litecov/internal/paths"
 )
 
 const Marker = "<!-- litecov -->"
@@ -64,7 +65,7 @@ func findMissingFiles(report *coverage.Report, changedFiles []string) []string {
 
 	var missing []string
 	for _, changedFile := range changedFiles {
-		if !isSourceFileForComment(changedFile) {
+		if !paths.IsSourceFile(changedFile) {
 			continue
 		}
 		// Check if file is in coverage report (direct or suffix match)
@@ -86,23 +87,6 @@ func findMissingFiles(report *coverage.Report, changedFiles []string) []string {
 	return missing
 }
 
-// isSourceFileForComment checks if a file should be shown in coverage report
-func isSourceFileForComment(path string) bool {
-	if !strings.HasSuffix(path, ".go") {
-		return false
-	}
-	if strings.HasSuffix(path, "_test.go") {
-		return false
-	}
-	if strings.Contains(path, "/vendor/") ||
-		strings.Contains(path, "generated") ||
-		strings.Contains(path, ".pb.go") ||
-		strings.Contains(path, "_mock.go") ||
-		strings.Contains(path, "mock_") {
-		return false
-	}
-	return true
-}
 
 func FormatWithComparison(comp *coverage.Comparison, opts Options) string {
 	if comp == nil || comp.Head == nil {
@@ -406,7 +390,9 @@ func filterFiles(files []coverage.FileCoverage, opts Options) []coverage.FileCov
 		}
 		var result []coverage.FileCoverage
 		for _, f := range files {
-			if changedSet[f.Path] {
+			// Use suffix matching to handle different path prefixes
+			matched := paths.FindMatchingChangedFile(f.Path, changedSet)
+			if matched != "" {
 				result = append(result, f)
 			}
 		}

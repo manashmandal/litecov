@@ -1,5 +1,7 @@
 package coverage
 
+import "github.com/manashmandal/litecov/internal/paths"
+
 type FileCoverage struct {
 	Path           string
 	LinesCovered   int
@@ -104,7 +106,7 @@ func NewComparison(head, base *Report, changedFiles []string) *Comparison {
 	for _, headFile := range head.Files {
 		matchedChangedFile := ""
 		if filterByChanged {
-			matchedChangedFile = findMatchingChangedFile(headFile.Path, changedFileSet)
+			matchedChangedFile = paths.FindMatchingChangedFile(headFile.Path, changedFileSet)
 			if matchedChangedFile == "" {
 				continue
 			}
@@ -140,7 +142,7 @@ func NewComparison(head, base *Report, changedFiles []string) *Comparison {
 				continue
 			}
 			// Only include source files that should have coverage
-			if !isSourceFile(changedFile) {
+			if !paths.IsSourceFile(changedFile) {
 				continue
 			}
 			fc := FileChange{
@@ -164,69 +166,6 @@ func NewComparison(head, base *Report, changedFiles []string) *Comparison {
 	return comp
 }
 
-// findMatchingChangedFile returns the matching changed file path, or empty string if not found
-func findMatchingChangedFile(coveragePath string, changedSet map[string]bool) string {
-	if changedSet[coveragePath] {
-		return coveragePath
-	}
-	// Try suffix matching for paths that may have different prefixes
-	for changedPath := range changedSet {
-		if hasSuffix(coveragePath, changedPath) || hasSuffix(changedPath, coveragePath) {
-			return changedPath
-		}
-	}
-	return ""
-}
-
-// hasSuffix checks if path ends with suffix (with proper path boundary)
-func hasSuffix(path, suffix string) bool {
-	if len(suffix) > len(path) {
-		return false
-	}
-	if path == suffix {
-		return true
-	}
-	// Check suffix with path boundary (/)
-	if len(path) > len(suffix) && path[len(path)-len(suffix)-1] == '/' {
-		return path[len(path)-len(suffix):] == suffix
-	}
-	return false
-}
-
-// isSourceFile checks if a file is a source file that should have coverage
-func isSourceFile(path string) bool {
-	// Only check Go files for now (can be extended for other languages)
-	if len(path) < 3 || path[len(path)-3:] != ".go" {
-		return false
-	}
-	// Skip test files
-	if len(path) >= 8 && path[len(path)-8:] == "_test.go" {
-		return false
-	}
-	// Skip vendor at start of path
-	if len(path) >= 7 && path[0:7] == "vendor/" {
-		return false
-	}
-	// Skip vendor, generated, mock files
-	for i := 0; i < len(path); i++ {
-		if i+8 <= len(path) && path[i:i+8] == "/vendor/" {
-			return false
-		}
-		if i+9 <= len(path) && path[i:i+9] == "generated" {
-			return false
-		}
-		if i+6 <= len(path) && path[i:i+6] == ".pb.go" {
-			return false
-		}
-		if i+8 <= len(path) && path[i:i+8] == "_mock.go" {
-			return false
-		}
-		if i+5 <= len(path) && path[i:i+5] == "mock_" {
-			return false
-		}
-	}
-	return true
-}
 
 // findFileInReport finds a file in a report by path suffix matching
 func findFileInReport(report *Report, path string) *FileCoverage {
@@ -235,8 +174,8 @@ func findFileInReport(report *Report, path string) *FileCoverage {
 	}
 	for i := range report.Files {
 		if report.Files[i].Path == path ||
-			hasSuffix(report.Files[i].Path, path) ||
-			hasSuffix(path, report.Files[i].Path) {
+			paths.HasSuffix(report.Files[i].Path, path) ||
+			paths.HasSuffix(path, report.Files[i].Path) {
 			return &report.Files[i]
 		}
 	}
