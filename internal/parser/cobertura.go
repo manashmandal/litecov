@@ -121,9 +121,23 @@ func resolveFilename(filename string, sources []string) string {
 
 // extractProjectPath attempts to extract a project-relative path from a source directory.
 // e.g., "/home/runner/work/myrepo/myrepo/src" might return "src"
+// e.g., "/home/runner/work/myrepo/myrepo/python" might return "python"
 func extractProjectPath(source string) string {
+	// GitHub Actions workspace pattern: /home/runner/work/{repo}/{repo}/...
+	// The path after the repeated repo name is relative to repo root
+	parts := strings.Split(source, "/")
+	for i := 0; i < len(parts)-1; i++ {
+		// Look for repeated directory name (repo name appears twice in GHA)
+		if parts[i] != "" && parts[i] == parts[i+1] {
+			// Everything after the second occurrence is repo-relative
+			if i+2 < len(parts) {
+				return strings.Join(parts[i+2:], "/")
+			}
+		}
+	}
+
 	// Common Python project markers
-	markers := []string{"/src/", "/lib/", "/app/", "/tests/", "/test/"}
+	markers := []string{"/src/", "/lib/", "/app/", "/tests/", "/test/", "/python/"}
 	for _, marker := range markers {
 		if idx := strings.LastIndex(source, marker); idx >= 0 {
 			return source[idx+1:] // Return everything after the slash before marker
@@ -132,7 +146,7 @@ func extractProjectPath(source string) string {
 
 	// Check if source ends with a known directory
 	base := filepath.Base(source)
-	knownDirs := []string{"src", "lib", "app", "tests", "test"}
+	knownDirs := []string{"src", "lib", "app", "tests", "test", "python", "py"}
 	for _, dir := range knownDirs {
 		if base == dir {
 			return base
