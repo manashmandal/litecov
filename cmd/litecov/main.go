@@ -118,7 +118,7 @@ func main() {
 	gh := github.NewClient(token, owner, repo)
 
 	var changedFiles []string
-	if (*showFiles == "changed" || *annotations) && prNumber > 0 {
+	if *showFiles == "changed" && prNumber > 0 {
 		changedFiles, err = gh.GetChangedFiles(prNumber)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: Failed to get changed files: %v\n", err)
@@ -126,7 +126,12 @@ func main() {
 	}
 
 	if *annotations {
-		outputAnnotations(report, changedFiles)
+		// Only filter annotations by changed files if show-files is "changed"
+		annotationFiles := changedFiles
+		if *showFiles != "changed" {
+			annotationFiles = nil // nil means show all files
+		}
+		outputAnnotations(report, annotationFiles)
 	}
 
 	repoURL := fmt.Sprintf("https://github.com/%s", repository)
