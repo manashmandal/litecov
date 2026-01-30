@@ -3,13 +3,17 @@ package parser
 import (
 	"bufio"
 	"io"
+	"path/filepath"
 	"strconv"
 	"strings"
 
 	"github.com/manashmandal/litecov/internal/coverage"
 )
 
-type LCOVParser struct{}
+type LCOVParser struct {
+	// SourcePrefix is prepended to file paths if set
+	SourcePrefix string
+}
 
 func (p *LCOVParser) Parse(r io.Reader) (*coverage.Report, error) {
 	report := &coverage.Report{}
@@ -25,8 +29,13 @@ func (p *LCOVParser) Parse(r io.Reader) (*coverage.Report, error) {
 
 		switch {
 		case strings.HasPrefix(line, "SF:"):
+			filePath := strings.TrimPrefix(line, "SF:")
+			// If path is relative and we have a source prefix, prepend it
+			if p.SourcePrefix != "" && !filepath.IsAbs(filePath) {
+				filePath = filepath.Join(p.SourcePrefix, filePath)
+			}
 			current = &coverage.FileCoverage{
-				Path: strings.TrimPrefix(line, "SF:"),
+				Path: filePath,
 			}
 
 		case strings.HasPrefix(line, "DA:"):

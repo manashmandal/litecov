@@ -81,9 +81,9 @@ func main() {
 		}
 		fmt.Printf("Detected format: %s\n", detected)
 		f.Seek(0, 0)
-		p, _ = parser.GetParser(detected)
+		p, _ = parser.GetParserWithPath(detected, *coverageFile)
 	} else {
-		p, err = parser.GetParser(*format)
+		p, err = parser.GetParserWithPath(*format, *coverageFile)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Unknown format: %s\n", *format)
 			os.Exit(1)
