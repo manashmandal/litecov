@@ -251,20 +251,22 @@ func formatImpactedFiles(files []coverage.FileCoverage, opts Options) string {
 
 	sb.WriteString("<details>\n")
 	sb.WriteString(fmt.Sprintf("<summary>Impacted Files (%d)</summary>\n\n", len(files)))
-	sb.WriteString("| File | Coverage | Status |\n")
-	sb.WriteString("|------|----------|--------|\n")
+	sb.WriteString("| File | Coverage | Uncovered Lines | Status |\n")
+	sb.WriteString("|------|----------|-----------------|--------|\n")
 
 	for _, f := range files {
 		pct := f.Percentage()
 		emoji := getStatusEmoji(pct)
 		fileName := formatFileName(f.Path, opts)
 		coverageStr := fmt.Sprintf("`%.2f%%`", pct)
+		uncoveredStr := formatUncoveredLines(f.UncoveredLines, opts.RepoURL, opts.SHA, f.Path)
 		// Mark files with no coverage data
 		if f.LinesTotal == 0 {
 			coverageStr = "`⚠️ no tests`"
+			uncoveredStr = "-"
 			emoji = "❌"
 		}
-		sb.WriteString(fmt.Sprintf("| %s | %s | %s |\n", fileName, coverageStr, emoji))
+		sb.WriteString(fmt.Sprintf("| %s | %s | %s | %s |\n", fileName, coverageStr, uncoveredStr, emoji))
 	}
 
 	sb.WriteString("\n</details>\n\n")
