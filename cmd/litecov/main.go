@@ -11,6 +11,7 @@ import (
 	"github.com/manashmandal/litecov/internal/coverage"
 	"github.com/manashmandal/litecov/internal/github"
 	"github.com/manashmandal/litecov/internal/parser"
+	"github.com/manashmandal/litecov/internal/paths"
 )
 
 func main() {
@@ -80,9 +81,9 @@ func main() {
 		}
 		fmt.Printf("Detected format: %s\n", detected)
 		f.Seek(0, 0)
-		p, _ = parser.GetParser(detected)
+		p, _ = parser.GetParserWithPath(detected, *coverageFile)
 	} else {
-		p, err = parser.GetParser(*format)
+		p, err = parser.GetParserWithPath(*format, *coverageFile)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Unknown format: %s\n", *format)
 			os.Exit(1)
@@ -117,7 +118,7 @@ func main() {
 	gh := github.NewClient(token, owner, repo)
 
 	var changedFiles []string
-	if (*showFiles == "changed" || *annotations) && prNumber > 0 {
+	if *showFiles == "changed" && prNumber > 0 {
 		changedFiles, err = gh.GetChangedFiles(prNumber)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: Failed to get changed files: %v\n", err)
@@ -125,7 +126,12 @@ func main() {
 	}
 
 	if *annotations {
-		outputAnnotations(report, changedFiles)
+		// Only filter annotations by changed files if show-files is "changed"
+		annotationFiles := changedFiles
+		if *showFiles != "changed" {
+			annotationFiles = nil // nil means show all files
+		}
+		outputAnnotations(report, annotationFiles)
 	}
 
 	repoURL := fmt.Sprintf("https://github.com/%s", repository)
@@ -266,12 +272,12 @@ func outputAnnotations(report *coverage.Report, changedFiles []string) {
 		// Normalize path: strip Go module prefix to get repo-relative path
 		// Coverage paths may be like "github.com/user/repo/internal/foo.go"
 		// but we need "internal/foo.go" for GitHub annotations
-		relativePath := normalizePathForAnnotation(file.Path)
+		relativePath := paths.NormalizePathForAnnotation(file.Path)
 
 		// Check if file is in changed set (use normalized path for matching)
 		matchedPath := ""
 		if len(changedFiles) > 0 {
-			matchedPath = findMatchingChangedFile(relativePath, changedSet)
+			matchedPath = paths.FindMatchingChangedFile(relativePath, changedSet)
 			if matchedPath == "" {
 				continue
 			}
@@ -306,78 +312,10 @@ func outputAnnotations(report *coverage.Report, changedFiles []string) {
 			continue
 		}
 		// Only annotate source files (skip test files, configs, etc.)
-		if !isSourceFile(changedFile) {
+		if !paths.IsSourceFile(changedFile) {
 			continue
 		}
 		fmt.Printf("::warning file=%s,line=1,title=No Coverage::File has no test coverage\n", changedFile)
 	}
 }
 
-// normalizePathForAnnotation converts a Go module path to a repo-relative path
-// e.g., "github.com/user/repo/internal/foo.go" -> "internal/foo.go"
-func normalizePathForAnnotation(path string) string {
-	// Common Go module path patterns to strip
-	// Look for known directory markers that indicate repo structure
-	markers := []string{"/internal/", "/cmd/", "/pkg/", "/api/", "/test/", "/tests/"}
-	for _, marker := range markers {
-		if idx := strings.Index(path, marker); idx >= 0 {
-			return path[idx+1:] // +1 to skip the leading slash
-		}
-	}
-	// If no marker found but path contains github.com or similar,
-	// try to extract after the third slash (github.com/user/repo/...)
-	parts := strings.SplitN(path, "/", 4)
-	if len(parts) == 4 && (strings.Contains(parts[0], ".") || parts[0] == "github") {
-		return parts[3]
-	}
-	return path
-}
-
-// isPathInChangedSet checks if the given path matches any file in the changed set
-func isPathInChangedSet(path string, changedSet map[string]bool) bool {
-	if changedSet[path] {
-		return true
-	}
-	// Also try suffix matching for paths that may have different prefixes
-	for changedPath := range changedSet {
-		if strings.HasSuffix(path, changedPath) || strings.HasSuffix(changedPath, path) {
-			return true
-		}
-	}
-	return false
-}
-
-// findMatchingChangedFile returns the matching changed file path, or empty string if not found
-func findMatchingChangedFile(coveragePath string, changedSet map[string]bool) string {
-	if changedSet[coveragePath] {
-		return coveragePath
-	}
-	// Try suffix matching for paths that may have different prefixes
-	for changedPath := range changedSet {
-		if strings.HasSuffix(coveragePath, changedPath) || strings.HasSuffix(changedPath, coveragePath) {
-			return changedPath
-		}
-	}
-	return ""
-}
-
-// isSourceFile checks if a file is a source file that should have coverage
-func isSourceFile(path string) bool {
-	// Only check Go files for now (can be extended for other languages)
-	if !strings.HasSuffix(path, ".go") {
-		return false
-	}
-	// Skip test files
-	if strings.HasSuffix(path, "_test.go") {
-		return false
-	}
-	// Skip generated files (common patterns)
-	if strings.Contains(path, "/vendor/") ||
-		strings.Contains(path, "generated") ||
-		strings.Contains(path, ".pb.go") ||
-		strings.Contains(path, "_mock.go") ||
-		strings.Contains(path, "mock_") {
-		return false
-	}
-	return true
-}
