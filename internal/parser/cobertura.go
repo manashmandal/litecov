@@ -4,6 +4,7 @@ import (
 	"encoding/xml"
 	"io"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -47,7 +48,20 @@ func (p *CoberturaParser) Parse(r io.Reader) (*coverage.Report, error) {
 	}
 
 	fileMap := make(map[string]*coverage.FileCoverage)
-	linesSeen := make(map[string]map[int]bool)
+	// linesHit tracks, per resolved filename, whether each line number has
+	// been hit by any <class> that reports it. One source file legitimately
+	// maps to several <class> elements: every JVM class in a file gets its
+	// own <class> with filename pointing at the shared source (an outer
+	// class and its inner classes), and a linked or shared .NET source
+	// compiled into more than one assembly produces the same shape. So the
+	// same line number can appear more than once with a different hit
+	// count per class. OR-ing the hit status across every occurrence -- a
+	// hit beats a miss -- instead of keeping only the first one seen
+	// matches how Codecov merges these (merge_line takes the larger of two
+	// numeric coverage values); see issue #26. LinesTotal, LinesCovered and
+	// UncoveredLines are derived from this map once every class has been
+	// walked, in finalizeCoberturaFile below.
+	linesHit := make(map[string]map[int]bool)
 
 	for _, pkg := range cov.Packages {
 		for _, class := range pkg.Classes {
@@ -66,35 +80,51 @@ func (p *CoberturaParser) Parse(r io.Reader) (*coverage.Report, error) {
 			if !exists {
 				fc = &coverage.FileCoverage{Path: filename}
 				fileMap[filename] = fc
-				linesSeen[filename] = make(map[int]bool)
+				linesHit[filename] = make(map[int]bool)
 			}
 			for _, line := range class.Lines {
 				lineNum, ok := parseCoberturaLineNumber(line.Number)
 				if !ok {
 					continue
 				}
-				// Skip duplicate lines (same line number seen in multiple classes)
-				if linesSeen[filename][lineNum] {
-					continue
-				}
-				linesSeen[filename][lineNum] = true
-				fc.LinesTotal++
-				if parseCoberturaHits(line.Hits) {
-					fc.LinesCovered++
-				} else {
-					fc.UncoveredLines = append(fc.UncoveredLines, lineNum)
-				}
+				hit := parseCoberturaHits(line.Hits)
+				linesHit[filename][lineNum] = linesHit[filename][lineNum] || hit
 			}
 		}
 	}
 
 	report := &coverage.Report{}
 	for _, fc := range fileMap {
+		finalizeCoberturaFile(fc, linesHit[fc.Path])
 		report.Files = append(report.Files, *fc)
 	}
 
 	report.Calculate()
 	return report, nil
+}
+
+// finalizeCoberturaFile derives fc's LinesTotal, LinesCovered and
+// UncoveredLines from lines, the per-line hit map accumulated across every
+// <class> that resolves to fc.Path (see the linesHit comment in Parse).
+// Deriving the totals here, once, instead of incrementing them inside the
+// class/line loop is what collapses a line number repeated across classes
+// into a single entry instead of counting it once per class and letting an
+// earlier class's miss shadow a later class's hit.
+func finalizeCoberturaFile(fc *coverage.FileCoverage, lines map[int]bool) {
+	covered := 0
+	var uncovered []int
+	for lineNum, hit := range lines {
+		if hit {
+			covered++
+		} else {
+			uncovered = append(uncovered, lineNum)
+		}
+	}
+	sort.Ints(uncovered)
+
+	fc.LinesTotal = len(lines)
+	fc.LinesCovered = covered
+	fc.UncoveredLines = uncovered
 }
 
 // parseCoberturaLineNumber parses a Cobertura <line> number attribute and

@@ -69,6 +69,81 @@ func TestCoberturaParser_Parse_DuplicateFiles(t *testing.T) {
 	}
 }
 
+func TestCoberturaParser_Parse_DuplicateLineAcrossClassesMergesToHit(t *testing.T) {
+	// Mirrors the repro in issue #26: com/example/Outer.java compiles to two
+	// <class> elements (an outer class and an inner class), a normal shape
+	// for JVM sources, and both report line 1 and line 5. The class walked
+	// first records them as misses; the second records them as hits. A hit
+	// from either class must win instead of the first class walked
+	// shadowing the rest.
+	xml := `<?xml version="1.0"?>
+<coverage><packages><package name="com.example"><classes>
+<class name="com.example.Outer$Inner" filename="com/example/Outer.java"><lines>
+<line number="1" hits="0"/>
+<line number="5" hits="0"/>
+<line number="12" hits="3"/>
+</lines></class>
+<class name="com.example.Outer" filename="com/example/Outer.java"><lines>
+<line number="1" hits="9"/>
+<line number="5" hits="9"/>
+<line number="20" hits="1"/>
+</lines></class>
+</classes></package></packages></coverage>`
+	p := &CoberturaParser{}
+	report, err := p.Parse(strings.NewReader(xml))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if len(report.Files) != 1 {
+		t.Fatalf("got %d files, want 1", len(report.Files))
+	}
+	f := report.Files[0]
+	if f.LinesTotal != 4 {
+		t.Errorf("LinesTotal = %v, want 4 (lines 1, 5, 12, 20; lines 1 and 5 must not double count)", f.LinesTotal)
+	}
+	if f.LinesCovered != 4 {
+		t.Errorf("LinesCovered = %v, want 4 (lines 1 and 5 were hit by the outer class)", f.LinesCovered)
+	}
+	if len(f.UncoveredLines) != 0 {
+		t.Errorf("UncoveredLines = %v, want none", f.UncoveredLines)
+	}
+}
+
+func TestCoberturaParser_Parse_DuplicateLineAcrossClassesKeepsGenuineMiss(t *testing.T) {
+	// A line missed by every <class> that reports it must stay uncovered
+	// after merging; only a line hit by at least one class flips to
+	// covered. Also checks that merge order doesn't matter: the hit is seen
+	// first here and the miss second, the reverse of the case above.
+	xml := `<?xml version="1.0"?>
+<coverage><packages><package name="p"><classes>
+<class name="A" filename="shared.cs"><lines>
+<line number="2" hits="4"/>
+</lines></class>
+<class name="B" filename="shared.cs"><lines>
+<line number="2" hits="0"/>
+<line number="3" hits="0"/>
+</lines></class>
+</classes></package></packages></coverage>`
+	p := &CoberturaParser{}
+	report, err := p.Parse(strings.NewReader(xml))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if len(report.Files) != 1 {
+		t.Fatalf("got %d files, want 1", len(report.Files))
+	}
+	f := report.Files[0]
+	if f.LinesTotal != 2 {
+		t.Errorf("LinesTotal = %v, want 2 (line 2 must not be counted twice)", f.LinesTotal)
+	}
+	if f.LinesCovered != 1 {
+		t.Errorf("LinesCovered = %v, want 1 (line 2 was hit by class A)", f.LinesCovered)
+	}
+	if len(f.UncoveredLines) != 1 || f.UncoveredLines[0] != 3 {
+		t.Errorf("UncoveredLines = %v, want [3]", f.UncoveredLines)
+	}
+}
+
 func TestCoberturaParser_Parse_InvalidXML(t *testing.T) {
 	p := &CoberturaParser{}
 	_, err := p.Parse(strings.NewReader("not valid xml"))
