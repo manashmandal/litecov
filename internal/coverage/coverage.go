@@ -62,6 +62,7 @@ type FileChange struct {
 	Delta        float64
 	IsNew        bool
 	NoCoverage   bool // True if file has no coverage data (completely untested)
+	NoStatements bool // True if the file has no coverable lines (LinesTotal == 0): coverage is undefined, not 0%
 }
 
 // NewComparison creates a comparison between head and base reports
@@ -121,6 +122,10 @@ func NewComparison(head, base *Report, changedFiles []string) *Comparison {
 		fc := FileChange{
 			Path:         filePath,
 			HeadCoverage: headFile.Percentage(),
+			// headFile.Percentage() falls back to 0 for LinesTotal == 0, so
+			// this is what lets the comparison table tell "nothing to
+			// measure" apart from "measured, nothing covered" (issue #35).
+			NoStatements: headFile.LinesTotal == 0,
 		}
 
 		if baseFile, exists := baseFileMap[headFile.Path]; exists {
@@ -165,7 +170,6 @@ func NewComparison(head, base *Report, changedFiles []string) *Comparison {
 
 	return comp
 }
-
 
 // findFileInReport finds a file in a report by path suffix matching
 func findFileInReport(report *Report, path string) *FileCoverage {

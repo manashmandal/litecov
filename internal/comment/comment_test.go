@@ -239,6 +239,37 @@ func TestFormat_Threshold(t *testing.T) {
 	}
 }
 
+func TestFormat_Threshold_ExcludesZeroStatementFiles(t *testing.T) {
+	// A file with no coverable lines (e.g. an empty __init__.py) has
+	// nothing to compare against the threshold. Percentage() falls back to
+	// 0 for LinesTotal == 0, which used to always read as "below
+	// threshold" and get listed next to files that were actually tested
+	// and failed. See issue #35.
+	report := &coverage.Report{
+		Files: []coverage.FileCoverage{
+			{Path: "src/__init__.py", LinesCovered: 0, LinesTotal: 0},
+			{Path: "src/bad.go", LinesCovered: 40, LinesTotal: 100},
+		},
+		TotalCovered: 40,
+		TotalLines:   100,
+		Coverage:     40.0,
+	}
+
+	opts := Options{
+		ShowFiles: "threshold:80",
+		Threshold: 80,
+	}
+
+	result := Format(report, opts)
+
+	if strings.Contains(result, "src/__init__.py") {
+		t.Error("threshold:N should not select a file with no coverable lines")
+	}
+	if !strings.Contains(result, "src/bad.go") {
+		t.Error("missing file genuinely below threshold")
+	}
+}
+
 func TestFormat_Worst(t *testing.T) {
 	report := &coverage.Report{
 		Files: []coverage.FileCoverage{
@@ -271,6 +302,37 @@ func TestFormat_Worst(t *testing.T) {
 	}
 	if !strings.Contains(result, "src/ok.go") {
 		t.Error("missing second worst file")
+	}
+}
+
+func TestFormat_Worst_ExcludesZeroStatementFiles(t *testing.T) {
+	// A file with no coverable lines has nothing to rank. Percentage()
+	// falls back to 0 for LinesTotal == 0, which used to sort it straight
+	// to the top as the worst file in the repo and crowd out files that
+	// were actually tested and failed. See issue #35.
+	report := &coverage.Report{
+		Files: []coverage.FileCoverage{
+			{Path: "src/__init__.py", LinesCovered: 0, LinesTotal: 0},
+			{Path: "src/good.go", LinesCovered: 95, LinesTotal: 100},
+			{Path: "src/bad.go", LinesCovered: 40, LinesTotal: 100},
+		},
+		TotalCovered: 135,
+		TotalLines:   200,
+		Coverage:     67.5,
+	}
+
+	opts := Options{
+		ShowFiles: "worst:1",
+		WorstN:    1,
+	}
+
+	result := Format(report, opts)
+
+	if strings.Contains(result, "src/__init__.py") {
+		t.Error("worst:N should not rank a file with no coverable lines as the worst file")
+	}
+	if !strings.Contains(result, "src/bad.go") {
+		t.Error("worst:1 should surface the genuinely worst-covered file")
 	}
 }
 
@@ -1083,6 +1145,29 @@ func TestFormatImpactedFilesWithDelta(t *testing.T) {
 		if !strings.Contains(result, check) {
 			t.Errorf("missing %q in output", check)
 		}
+	}
+}
+
+func TestFormatImpactedFilesWithDelta_NoStatements(t *testing.T) {
+	// A file with no coverable lines has nothing to measure, not 0%
+	// coverage. Before this was tracked on FileChange, HeadCoverage's
+	// fallback-to-0 rendered a flat `0.00%` with a failing ❌, identical to
+	// a file whose statements were never hit. See issue #35.
+	fileChanges := []coverage.FileChange{
+		{Path: "src/__init__.py", HeadCoverage: 0, BaseCoverage: 0, Delta: 0, NoStatements: true},
+		{Path: "src/a.py", HeadCoverage: 100, BaseCoverage: 100, Delta: 0},
+	}
+
+	result := formatImpactedFilesWithDelta(fileChanges, Options{})
+
+	if strings.Contains(result, "`0.00%`") {
+		t.Error("a file with no coverable lines should not render as a flat 0.00%")
+	}
+	if !strings.Contains(result, "`no statements`") {
+		t.Error("missing neutral coverage label for a file with no coverable lines")
+	}
+	if strings.Contains(result, "❌") {
+		t.Error("a file with no coverable lines should get a neutral status, not ❌")
 	}
 }
 

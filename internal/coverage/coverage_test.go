@@ -235,6 +235,43 @@ func TestNewComparison_WithBase(t *testing.T) {
 	}
 }
 
+func TestNewComparison_NoStatements(t *testing.T) {
+	// A file with no coverable lines (e.g. an empty __init__.py) has
+	// nothing to measure. Percentage() falls back to 0 for LinesTotal ==
+	// 0, so FileChange needs its own signal to tell that apart from a file
+	// that was actually measured at 0%. See issue #35.
+	head := &Report{
+		Files: []FileCoverage{
+			{Path: "src/__init__.py", LinesCovered: 0, LinesTotal: 0},
+			{Path: "src/a.go", LinesCovered: 100, LinesTotal: 100},
+		},
+		Coverage: 100.0,
+	}
+
+	comp := NewComparison(head, nil, nil)
+
+	if len(comp.FileChanges) != 2 {
+		t.Fatalf("FileChanges length = %v, want 2", len(comp.FileChanges))
+	}
+
+	var initChange, aChange FileChange
+	for _, fc := range comp.FileChanges {
+		switch fc.Path {
+		case "src/__init__.py":
+			initChange = fc
+		case "src/a.go":
+			aChange = fc
+		}
+	}
+
+	if !initChange.NoStatements {
+		t.Error("FileChanges[__init__.py].NoStatements should be true for a file with LinesTotal == 0")
+	}
+	if aChange.NoStatements {
+		t.Error("FileChanges[a.go].NoStatements should be false for a file with coverable lines")
+	}
+}
+
 func TestNewComparison_WithChangedFiles(t *testing.T) {
 	head := &Report{
 		Files: []FileCoverage{
@@ -359,4 +396,3 @@ func TestNewComparison_MissingFiles_SkipsTestFiles(t *testing.T) {
 		t.Errorf("FileChanges[0].Path = %v, want internal/foo/a.go", comp.FileChanges[0].Path)
 	}
 }
-

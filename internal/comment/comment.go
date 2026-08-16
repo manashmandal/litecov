@@ -306,10 +306,19 @@ func formatImpactedFilesWithDelta(fileChanges []coverage.FileChange, opts Option
 	sb.WriteString("|------|----------|---|--------|\n")
 
 	for _, fc := range fileChanges {
-		emoji := getStatusEmoji(fc.HeadCoverage)
 		fileName := formatFileName(fc.Path, opts)
 		deltaStr := formatFileDelta(fc)
-		sb.WriteString(fmt.Sprintf("| %s | `%.2f%%` | %s | %s |\n", fileName, fc.HeadCoverage, deltaStr, emoji))
+		coverageStr := fmt.Sprintf("`%.2f%%`", fc.HeadCoverage)
+		emoji := getStatusEmoji(fc.HeadCoverage)
+		// A file with no coverable lines has nothing to measure, not 0%
+		// coverage: HeadCoverage falls back to 0 for LinesTotal == 0, which
+		// would otherwise render identically to a file whose statements
+		// were never hit (issue #35).
+		if fc.NoStatements {
+			coverageStr = "`no statements`"
+			emoji = "➖"
+		}
+		sb.WriteString(fmt.Sprintf("| %s | %s | %s | %s |\n", fileName, coverageStr, deltaStr, emoji))
 	}
 
 	sb.WriteString("\n</details>\n\n")
@@ -447,6 +456,13 @@ func filterFiles(files []coverage.FileCoverage, opts Options) []coverage.FileCov
 	case strings.HasPrefix(opts.ShowFiles, "threshold:"):
 		var result []coverage.FileCoverage
 		for _, f := range files {
+			// A file with no coverable lines has nothing to compare against
+			// the threshold: Percentage() falls back to 0 for LinesTotal ==
+			// 0, which would otherwise always read as "below threshold"
+			// (issue #35).
+			if f.LinesTotal == 0 {
+				continue
+			}
 			if f.Percentage() < opts.Threshold {
 				result = append(result, f)
 			}
@@ -454,15 +470,22 @@ func filterFiles(files []coverage.FileCoverage, opts Options) []coverage.FileCov
 		return result
 
 	case strings.HasPrefix(opts.ShowFiles, "worst:"):
-		sorted := make([]coverage.FileCoverage, len(files))
-		copy(sorted, files)
-		sort.Slice(sorted, func(i, j int) bool {
-			return sorted[i].Percentage() < sorted[j].Percentage()
-		})
-		if opts.WorstN > len(sorted) {
-			return sorted
+		// Files with no coverable lines have nothing to rank: Percentage()
+		// falls back to 0 for LinesTotal == 0, which would otherwise always
+		// sort them to the top as the worst files in the repo (issue #35).
+		var measured []coverage.FileCoverage
+		for _, f := range files {
+			if f.LinesTotal > 0 {
+				measured = append(measured, f)
+			}
 		}
-		return sorted[:opts.WorstN]
+		sort.Slice(measured, func(i, j int) bool {
+			return measured[i].Percentage() < measured[j].Percentage()
+		})
+		if opts.WorstN > len(measured) {
+			return measured
+		}
+		return measured[:opts.WorstN]
 
 	default:
 		return files
