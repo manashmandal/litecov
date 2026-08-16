@@ -46,6 +46,7 @@ func (p *LCOVParser) Parse(r io.Reader) (*coverage.Report, error) {
 
 	var current *coverage.FileCoverage
 	var currentLines map[int]bool
+	var currentBranches map[int]map[string]bool
 	firstLine := true
 
 	for scanner.Scan() {
@@ -73,6 +74,7 @@ func (p *LCOVParser) Parse(r io.Reader) (*coverage.Report, error) {
 				Path: filePath,
 			}
 			currentLines = make(map[int]bool)
+			currentBranches = make(map[int]map[string]bool)
 
 		case strings.HasPrefix(line, "DA:"):
 			if current == nil {
@@ -112,6 +114,44 @@ func (p *LCOVParser) Parse(r io.Reader) (*coverage.Report, error) {
 				currentLines[lineNum] = currentLines[lineNum] || hit
 			}
 
+		case strings.HasPrefix(line, "BRDA:"):
+			if current == nil {
+				continue
+			}
+			parts := strings.Split(strings.TrimPrefix(line, "BRDA:"), ",")
+			if len(parts) >= 4 {
+				lineNum, err := strconv.Atoi(parts[0])
+				// Same line-number validation as DA: above -- a malformed or
+				// non-positive line number names no real line.
+				if err != nil || lineNum < 1 {
+					continue
+				}
+				// block:branch identifies one branch of the line. taken is
+				// "-" when the branch was never reached (dead code, e.g. an
+				// else arm that can't execute) or a hit count otherwise;
+				// Codecov's LCOV processor treats both "-" and "0" as not
+				// taken, so only a positive count counts as taken here.
+				branchID := strings.TrimSpace(parts[1]) + ":" + strings.TrimSpace(parts[2])
+				taken := false
+				if raw := strings.TrimSpace(parts[3]); raw != "-" {
+					hit, ok := parseExecutionCount(raw)
+					// An unparseable taken count can't be classified either
+					// way, so the record is dropped instead of guessed at --
+					// same as an unparseable DA: hit count above.
+					if !ok {
+						continue
+					}
+					taken = hit
+				}
+				if currentBranches[lineNum] == nil {
+					currentBranches[lineNum] = make(map[string]bool)
+				}
+				// A block:branch pair can repeat across shards the same way
+				// a DA: line can; OR it into what's already been seen for
+				// this branch in this record, a taken beats a not-taken.
+				currentBranches[lineNum][branchID] = currentBranches[lineNum][branchID] || taken
+			}
+
 		// LF: and LH: are lcov's own summary of the DA: records in this
 		// block, not an independent source of truth -- they're derived the
 		// same way finalizeRecord derives LinesTotal/LinesCovered below, and
@@ -123,6 +163,7 @@ func (p *LCOVParser) Parse(r io.Reader) (*coverage.Report, error) {
 
 		case line == "end_of_record":
 			if current != nil {
+				applyBranchCoverage(currentLines, currentBranches)
 				finalizeRecord(current, currentLines)
 				// An SF: record with no usable DA: rows -- a file excluded by
 				// an ignore pattern, a generated file, a header, or a record
@@ -136,6 +177,7 @@ func (p *LCOVParser) Parse(r io.Reader) (*coverage.Report, error) {
 				}
 				current = nil
 				currentLines = nil
+				currentBranches = nil
 			}
 		}
 	}
@@ -147,6 +189,7 @@ func (p *LCOVParser) Parse(r io.Reader) (*coverage.Report, error) {
 	// Flush a trailing record that has no closing end_of_record, e.g. a
 	// tracefile truncated by a killed test run or a cut-short upload.
 	if current != nil {
+		applyBranchCoverage(currentLines, currentBranches)
 		finalizeRecord(current, currentLines)
 		// See the empty-record comment on the end_of_record case above --
 		// a record with no line data is dropped rather than merged.
@@ -187,6 +230,45 @@ func parseExecutionCount(raw string) (hit bool, ok bool) {
 		return false, false
 	}
 	return f > 0, true
+}
+
+// applyBranchCoverage folds branches, the per-line block:branch taken map
+// built while scanning a record's BRDA: records, into lines, the same
+// record's DA: hit map -- before finalizeRecord and mergeFileRecord derive
+// LinesTotal/LinesCovered/UncoveredLines from lines, so both the
+// single-record and the merged-duplicate-SF: path pick up the branch data
+// without needing their own copy of this logic. A DA: line that ran but
+// left one of its branches untaken is downgraded from hit to not-hit here;
+// see issue #63. A BRDA: line number with no matching DA: entry has
+// nothing to downgrade and is left alone.
+func applyBranchCoverage(lines map[int]bool, branches map[int]map[string]bool) {
+	for lineNum, branchHits := range branches {
+		hit, ok := lines[lineNum]
+		if !ok {
+			continue
+		}
+		lines[lineNum] = lineHit(hit, branchHits)
+	}
+}
+
+// lineHit reports whether a line counts as a clean covered hit once its
+// branches are accounted for. This mirrors Codecov's LCOV processor
+// (services/report/languages/lcov.py), which replaces a branch line's
+// coverage with its taken/total branch fraction: a line is only as
+// covered as its least-covered branch, so any branch left untaken (a
+// BRDA: taken field of "-" or "0") demotes the line even though its DA:
+// record shows it executed. A line with no branch data falls back to its
+// plain DA: hit status unchanged.
+func lineHit(daHit bool, branches map[string]bool) bool {
+	if len(branches) == 0 {
+		return daHit
+	}
+	for _, taken := range branches {
+		if !taken {
+			return false
+		}
+	}
+	return true
 }
 
 // finalizeRecord derives rec's LinesTotal, LinesCovered and UncoveredLines

@@ -651,6 +651,117 @@ SF:/src/empty.js`
 	}
 }
 
+func TestLCOVParser_Parse_BRDAPartialAndMissedBranches(t *testing.T) {
+	// Mirrors the repro in issue #63: line 3 has one branch taken and one
+	// "-" (never reached), line 4 has both branches taken 0 times. Neither
+	// counts as a clean hit even though DA: shows both lines executed, so
+	// the file must read 0/2 (0%), not 2/2 (100%) with BRDA: ignored.
+	lcov := `SF:/src/a.js
+FN:3,foo
+FNDA:1,foo
+FNF:1
+FNH:1
+DA:3,1
+DA:4,1
+BRDA:3,0,0,1
+BRDA:3,0,1,-
+BRDA:4,0,0,0
+BRDA:4,0,1,0
+BRF:4
+BRH:1
+LF:2
+LH:2
+end_of_record`
+	p := &LCOVParser{}
+	report, err := p.Parse(strings.NewReader(lcov))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if len(report.Files) != 1 {
+		t.Fatalf("got %d files, want 1", len(report.Files))
+	}
+	f := report.Files[0]
+	if f.LinesTotal != 2 {
+		t.Errorf("LinesTotal = %v, want 2", f.LinesTotal)
+	}
+	if f.LinesCovered != 0 {
+		t.Errorf("LinesCovered = %v, want 0 (a missed branch must stop a DA: hit from counting as clean)", f.LinesCovered)
+	}
+	if len(f.UncoveredLines) != 2 || f.UncoveredLines[0] != 3 || f.UncoveredLines[1] != 4 {
+		t.Errorf("UncoveredLines = %v, want [3 4]", f.UncoveredLines)
+	}
+	if report.Coverage != 0 {
+		t.Errorf("Coverage = %v, want 0", report.Coverage)
+	}
+}
+
+func TestLCOVParser_Parse_BRDAAllBranchesTaken(t *testing.T) {
+	// A line whose every branch was taken must still count as a clean hit;
+	// BRDA: data should only ever demote a line, never add a hit that DA:
+	// didn't already report.
+	lcov := `SF:/src/a.js
+DA:3,1
+BRDA:3,0,0,1
+BRDA:3,0,1,1
+end_of_record`
+	p := &LCOVParser{}
+	report, err := p.Parse(strings.NewReader(lcov))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	f := report.Files[0]
+	if f.LinesCovered != 1 {
+		t.Errorf("LinesCovered = %v, want 1 (all branches taken)", f.LinesCovered)
+	}
+	if len(f.UncoveredLines) != 0 {
+		t.Errorf("UncoveredLines = %v, want none", f.UncoveredLines)
+	}
+}
+
+func TestLCOVParser_Parse_BRDADuplicateBranchOred(t *testing.T) {
+	// The same block:branch pair reported twice (e.g. concatenated shards)
+	// must OR together like duplicate DA: records do: a taken in either
+	// row makes the branch taken, so all of line 3's branches end up
+	// covered and it counts as a clean hit.
+	lcov := `SF:/src/a.js
+DA:3,1
+BRDA:3,0,0,0
+BRDA:3,0,0,1
+BRDA:3,0,1,1
+end_of_record`
+	p := &LCOVParser{}
+	report, err := p.Parse(strings.NewReader(lcov))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	f := report.Files[0]
+	if f.LinesCovered != 1 {
+		t.Errorf("LinesCovered = %v, want 1 (duplicate branch row must OR, not overwrite, with a hit)", f.LinesCovered)
+	}
+}
+
+func TestLCOVParser_Parse_BRDANoMatchingDA(t *testing.T) {
+	// A BRDA: line number with no DA: record for it is unusual input --
+	// real producers always pair the two -- and must not synthesize a new
+	// line entry or otherwise change the totals.
+	lcov := `SF:/src/a.js
+DA:1,1
+BRDA:99,0,0,0
+end_of_record`
+	p := &LCOVParser{}
+	report, err := p.Parse(strings.NewReader(lcov))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	f := report.Files[0]
+	if f.LinesTotal != 1 {
+		t.Errorf("LinesTotal = %v, want 1 (BRDA: with no matching DA: must not add a line)", f.LinesTotal)
+	}
+	if f.LinesCovered != 1 {
+		t.Errorf("LinesCovered = %v, want 1", f.LinesCovered)
+	}
+}
+
 func TestLCOVParser_Parse_OnlyEmptyTrailingRecord(t *testing.T) {
 	// A lone SF: record with no DA: data and nothing else -- flushed by the
 	// trailing-record path since there's no end_of_record -- leaves zero
