@@ -534,3 +534,73 @@ end_of_record`
 		t.Errorf("LinesCovered = %v, want 1", f.LinesCovered)
 	}
 }
+
+func TestLCOVParser_Parse_EmptyRecordSkipped(t *testing.T) {
+	// Mirrors the repro in issue #69: an SF: record with no usable DA: rows
+	// -- a file excluded by an ignore pattern, a generated file, or a
+	// header with LF:/LH: but no line data -- finalizes with LinesTotal ==
+	// 0 and must be dropped rather than kept as a phantom 0% file.
+	lcov := `SF:/src/empty.js
+LF:0
+LH:0
+end_of_record
+SF:/src/a.js
+DA:1,1
+end_of_record`
+	p := &LCOVParser{}
+	report, err := p.Parse(strings.NewReader(lcov))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if len(report.Files) != 1 {
+		t.Fatalf("got %d files, want 1 (empty record must be dropped)", len(report.Files))
+	}
+	if report.Files[0].Path != "/src/a.js" {
+		t.Errorf("Files[0].Path = %v, want /src/a.js", report.Files[0].Path)
+	}
+	if report.TotalLines != 1 {
+		t.Errorf("TotalLines = %v, want 1", report.TotalLines)
+	}
+	if report.Coverage != 100 {
+		t.Errorf("Coverage = %v, want 100", report.Coverage)
+	}
+}
+
+func TestLCOVParser_Parse_AllDAMalformedRecordSkipped(t *testing.T) {
+	// A record whose only DA: rows are all rejected -- one non-numeric,
+	// one naming line 0 -- also finalizes with LinesTotal == 0 and must be
+	// dropped the same way as a record with no DA: rows at all.
+	lcov := `SF:/src/broken.js
+DA:invalid
+DA:0,1
+end_of_record
+SF:/src/a.js
+DA:1,1
+end_of_record`
+	p := &LCOVParser{}
+	report, err := p.Parse(strings.NewReader(lcov))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if len(report.Files) != 1 {
+		t.Fatalf("got %d files, want 1 (record with only malformed DA: rows must be dropped)", len(report.Files))
+	}
+	if report.Files[0].Path != "/src/a.js" {
+		t.Errorf("Files[0].Path = %v, want /src/a.js", report.Files[0].Path)
+	}
+}
+
+func TestLCOVParser_Parse_EmptyTrailingRecordSkipped(t *testing.T) {
+	// Same as TestLCOVParser_Parse_EmptyRecordSkipped but for the trailing
+	// record with no closing end_of_record, which is flushed by the
+	// separate code path after the scan loop.
+	lcov := `SF:/src/empty.js`
+	p := &LCOVParser{}
+	report, err := p.Parse(strings.NewReader(lcov))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if len(report.Files) != 0 {
+		t.Errorf("got %d files, want 0 (empty trailing record must be dropped)", len(report.Files))
+	}
+}

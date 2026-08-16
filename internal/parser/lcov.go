@@ -110,7 +110,16 @@ func (p *LCOVParser) Parse(r io.Reader) (*coverage.Report, error) {
 		case line == "end_of_record":
 			if current != nil {
 				finalizeRecord(current, currentLines)
-				mergeFileRecord(report, fileIndex, lineHits, current, currentLines)
+				// An SF: record with no usable DA: rows -- a file excluded by
+				// an ignore pattern, a generated file, a header, or a record
+				// whose DA: rows were all rejected as malformed -- finalizes
+				// with LinesTotal == 0. Codecov drops these instead of
+				// reporting them as a file (shared/reports/resources.py:
+				// "dont append empty files"), so skip the merge here too
+				// rather than adding a phantom 0% entry to report.Files.
+				if current.LinesTotal > 0 {
+					mergeFileRecord(report, fileIndex, lineHits, current, currentLines)
+				}
 				current = nil
 				currentLines = nil
 			}
@@ -125,7 +134,11 @@ func (p *LCOVParser) Parse(r io.Reader) (*coverage.Report, error) {
 	// tracefile truncated by a killed test run or a cut-short upload.
 	if current != nil {
 		finalizeRecord(current, currentLines)
-		mergeFileRecord(report, fileIndex, lineHits, current, currentLines)
+		// See the empty-record comment on the end_of_record case above --
+		// a record with no line data is dropped rather than merged.
+		if current.LinesTotal > 0 {
+			mergeFileRecord(report, fileIndex, lineHits, current, currentLines)
+		}
 	}
 
 	report.Calculate()
