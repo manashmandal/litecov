@@ -96,6 +96,17 @@ func (p *CoberturaParser) Parse(r io.Reader) (*coverage.Report, error) {
 	report := &coverage.Report{}
 	for _, fc := range fileMap {
 		finalizeCoberturaFile(fc, linesHit[fc.Path])
+		// A <class> with an empty <lines/> -- e.g. coverage.py reporting
+		// line-rate="1" for a file with no statements, like an empty
+		// __init__.py -- finalizes with LinesTotal == 0. Codecov drops these
+		// instead of reporting them as a file (shared/reports/resources.py:
+		// "dont append empty files"), so skip it here too rather than adding
+		// a phantom 0% entry to report.Files; see issue #51. This mirrors
+		// the empty-record skip LCOVParser already applies for the same
+		// reason.
+		if fc.LinesTotal == 0 {
+			continue
+		}
 		report.Files = append(report.Files, *fc)
 	}
 

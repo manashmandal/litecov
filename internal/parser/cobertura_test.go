@@ -375,6 +375,74 @@ func TestCoberturaParser_Parse_ClassWithoutFilenameSkipped(t *testing.T) {
 	}
 }
 
+func TestCoberturaParser_Parse_EmptyClassSkipped(t *testing.T) {
+	// Mirrors the repro in issue #51: coverage.py emits a <class> with an
+	// empty <lines/> for a file with no statements, e.g. an empty
+	// __init__.py, and reports line-rate="1" for it. That class used to
+	// still produce a coverage.FileCoverage entry with LinesTotal == 0,
+	// which Percentage() then renders as a false 0.00% row instead of the
+	// 100% coverage.py actually reported. Codecov's own parser refuses to
+	// add a file with no measurable lines to the report at all
+	// (shared/reports/resources.py: "dont append empty files"), so litecov
+	// should too -- the same drop TestLCOVParser_Parse_EmptyRecordSkipped
+	// already covers for LCOV.
+	xml := `<?xml version="1.0"?>
+<coverage><packages><package name="mypkg"><classes>
+<class name="__init__.py" filename="mypkg/__init__.py" line-rate="1">
+  <methods/>
+  <lines/>
+</class>
+<class name="calc.py" filename="mypkg/calc.py" line-rate="0.545">
+  <lines>
+    <line number="1" hits="1"/>
+    <line number="2" hits="0"/>
+  </lines>
+</class>
+</classes></package></packages></coverage>`
+	p := &CoberturaParser{}
+	report, err := p.Parse(strings.NewReader(xml))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if len(report.Files) != 1 {
+		t.Fatalf("got %d files, want 1 (class with no lines must be dropped)", len(report.Files))
+	}
+	if report.Files[0].Path != "mypkg/calc.py" {
+		t.Errorf("Files[0].Path = %q, want %q", report.Files[0].Path, "mypkg/calc.py")
+	}
+	if report.TotalLines != 2 {
+		t.Errorf("TotalLines = %v, want 2 (the empty file must not contribute 0/0)", report.TotalLines)
+	}
+}
+
+func TestCoberturaParser_Parse_AllLinesRejectedSkipped(t *testing.T) {
+	// A class whose only <line> entries are all rejected as malformed --
+	// same as TestCoberturaParser_Parse_ZeroAndMissingLineNumbersDoNotCollide
+	// -- also finalizes with LinesTotal == 0 and must be dropped the same
+	// way as a class with an empty <lines/> altogether.
+	xml := `<?xml version="1.0"?>
+<coverage><packages><package name="pkg"><classes>
+<class name="Broken" filename="broken.py"><lines>
+<line number="0" hits="1"/>
+<line hits="1"/>
+</lines></class>
+<class name="Real" filename="real.py"><lines>
+<line number="1" hits="1"/>
+</lines></class>
+</classes></package></packages></coverage>`
+	p := &CoberturaParser{}
+	report, err := p.Parse(strings.NewReader(xml))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if len(report.Files) != 1 {
+		t.Fatalf("got %d files, want 1 (class with only rejected lines must be dropped)", len(report.Files))
+	}
+	if report.Files[0].Path != "real.py" {
+		t.Errorf("Files[0].Path = %q, want %q", report.Files[0].Path, "real.py")
+	}
+}
+
 func TestCoberturaParser_Parse_UncoveredLines(t *testing.T) {
 	xml := `<?xml version="1.0"?>
 <coverage>
