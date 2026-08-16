@@ -210,20 +210,48 @@ func resolveFilename(filename string, sources []string) string {
 	}
 
 	// For relative filenames (common in pytest-cov), we can prepend source info
-	// if it helps identify the path structure
-	if len(sources) > 0 {
-		source := strings.TrimSpace(sources[0])
-		if source != "" {
-			// Try to extract a meaningful project-relative path from the source
-			// e.g., source="/home/runner/work/repo/src" -> we want paths relative to repo root
-			projectPath := extractProjectPath(source)
-			if projectPath != "" && projectPath != "/" {
-				return filepath.Join(projectPath, filename)
-			}
-		}
+	// if it helps identify the path structure. A relative filename carries no
+	// link back to which <source> produced it, so this only guesses when every
+	// source agrees on the same project-relative path. With two roots like
+	// "src" and "lib" (coverage.py --source=src,lib, or a `coverage combine`
+	// across roots), a class that actually lives under the second root used to
+	// get the first root's prefix regardless -- misreporting its location and
+	// breaking the suffix match in internal/paths, so the file silently
+	// disappeared from the comment and from annotations even when the PR
+	// touched it. See issue #41. resolveAgreedProjectPath returns "" the
+	// moment two sources disagree, and the bare filename below still lets
+	// that suffix match succeed against whichever file it really is, unlike
+	// guessing a prefix that names the wrong directory.
+	if projectPath := resolveAgreedProjectPath(sources); projectPath != "" {
+		return filepath.Join(projectPath, filename)
 	}
 
 	return filename
+}
+
+// resolveAgreedProjectPath returns the project-relative path every source in
+// sources extracts to via extractProjectPath, or "" if the sources disagree
+// (or none of them yield one). A source that extractProjectPath can't read
+// anything from is skipped rather than treated as a disagreement -- it has
+// no opinion either way.
+func resolveAgreedProjectPath(sources []string) string {
+	agreed := ""
+	for _, source := range sources {
+		source = strings.TrimSpace(source)
+		if source == "" {
+			continue
+		}
+		candidate := extractProjectPath(source)
+		if candidate == "" || candidate == "/" {
+			continue
+		}
+		if agreed == "" {
+			agreed = candidate
+		} else if candidate != agreed {
+			return ""
+		}
+	}
+	return agreed
 }
 
 // trimSourceDir reports whether filename lives inside the directory source

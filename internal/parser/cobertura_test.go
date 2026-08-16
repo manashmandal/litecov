@@ -548,6 +548,131 @@ func TestCoberturaParser_Parse_NestedSourcesRepro(t *testing.T) {
 	}
 }
 
+func TestCoberturaParser_Parse_RelativeFilenameSourceResolution(t *testing.T) {
+	// Mirrors issue #41: resolveFilename prepends a source's project-relative
+	// path onto a relative <class filename="...">, but the filename itself
+	// never says which <source> it came from. The old code always used
+	// sources[0], so a class that actually lived under a later source still
+	// got the first source's prefix -- misreporting its location.
+	tests := []struct {
+		name     string
+		sources  []string
+		filename string
+		want     string
+	}{
+		{
+			name:     "single source still prepends its project path",
+			sources:  []string{"/home/runner/work/repo/repo/src"},
+			filename: "mypkg/calc.py",
+			want:     "src/mypkg/calc.py",
+		},
+		{
+			name:     "sources that agree on the same project path still prepend it",
+			sources:  []string{"/home/runner/work/repo/repo/src", "/home/ci/build/repo/repo/src"},
+			filename: "mypkg/calc.py",
+			want:     "src/mypkg/calc.py",
+		},
+		{
+			name: "sources that disagree leave the filename bare rather than guess wrong",
+			sources: []string{
+				"/home/runner/work/repo/repo/src",
+				"/home/runner/work/repo/repo/lib",
+			},
+			filename: "otherpkg/util.py",
+			// The old behavior returned "src/otherpkg/util.py" -- the first
+			// source's prefix -- even for a class whose true root is the
+			// second source, "lib". Nothing in a relative filename says
+			// which source produced it, so guessing either one risks being
+			// wrong; the bare filename at least still suffix-matches the
+			// real changed-file path downstream (internal/paths).
+			want: "otherpkg/util.py",
+		},
+		{
+			name:     "blank sources leave the filename bare",
+			sources:  []string{"   ", ""},
+			filename: "mypkg/calc.py",
+			want:     "mypkg/calc.py",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var sourcesXML strings.Builder
+			for _, s := range tt.sources {
+				sourcesXML.WriteString("<source>" + s + "</source>")
+			}
+			xmlDoc := `<?xml version="1.0"?>
+<coverage><sources>` + sourcesXML.String() + `</sources><packages><package name="p"><classes>
+<class name="A" filename="` + tt.filename + `"><lines><line number="1" hits="1"/></lines></class>
+</classes></package></packages></coverage>`
+
+			p := &CoberturaParser{}
+			report, err := p.Parse(strings.NewReader(xmlDoc))
+			if err != nil {
+				t.Fatalf("Parse() error = %v", err)
+			}
+			if len(report.Files) != 1 {
+				t.Fatalf("got %d files, want 1", len(report.Files))
+			}
+			if report.Files[0].Path != tt.want {
+				t.Errorf("Path = %q, want %q", report.Files[0].Path, tt.want)
+			}
+		})
+	}
+}
+
+func TestCoberturaParser_Parse_MultipleSourcesRepro(t *testing.T) {
+	// The exact repro from issue #41: two <source> roots and two classes
+	// with relative filenames, one truly under each root. resolveFilename
+	// can't tell which class came from which source, so when the sources
+	// disagree neither class gets a guessed prefix -- not just the one
+	// (otherpkg/util.py) that would have been wrong. That's a change from
+	// the old output, which reported "src/mypkg/calc.py" (right, by luck)
+	// and "src/otherpkg/util.py" (wrong: its real path is
+	// lib/otherpkg/util.py). Guessing per-source is what Codecov's
+	// cobertura processor does, by checking which candidate names a real
+	// file in the commit; litecov's parser has no access to that here, so
+	// leaving both bare is the safe option -- it still lets the suffix
+	// matcher in internal/paths recover the correct changed-file path for
+	// each one instead of silently dropping the misattributed file.
+	xml := `<coverage version="7.10.7" lines-valid="4" lines-covered="3" line-rate="0.75">
+  <sources>
+    <source>/home/runner/work/repo/repo/src</source>
+    <source>/home/runner/work/repo/repo/lib</source>
+  </sources>
+  <packages>
+    <package name="mypkg"><classes>
+      <class name="calc.py" filename="mypkg/calc.py"><methods/>
+        <lines><line number="1" hits="1"/><line number="2" hits="0"/></lines>
+      </class>
+    </classes></package>
+    <package name="otherpkg"><classes>
+      <class name="util.py" filename="otherpkg/util.py"><methods/>
+        <lines><line number="1" hits="1"/><line number="2" hits="1"/></lines>
+      </class>
+    </classes></package>
+  </packages>
+</coverage>`
+	p := &CoberturaParser{}
+	report, err := p.Parse(strings.NewReader(xml))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if len(report.Files) != 2 {
+		t.Fatalf("got %d files, want 2", len(report.Files))
+	}
+	got := map[string]bool{}
+	for _, f := range report.Files {
+		got[f.Path] = true
+	}
+	if got["src/otherpkg/util.py"] {
+		t.Errorf("files = %v, util.py must not be misreported under the src root it doesn't belong to", got)
+	}
+	if !got["otherpkg/util.py"] || !got["mypkg/calc.py"] {
+		t.Errorf("files = %v, want both classes left with their bare relative filenames", got)
+	}
+}
+
 func TestCoberturaParser_Parse_UncoveredLines(t *testing.T) {
 	xml := `<?xml version="1.0"?>
 <coverage>
