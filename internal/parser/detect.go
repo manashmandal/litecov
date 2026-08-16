@@ -10,21 +10,41 @@ import (
 
 var ErrUnknownFormat = errors.New("unable to detect coverage format")
 
+// maxDetectLines bounds how many lines DetectFormat reads before giving up.
+// A real LCOV or Cobertura file's first marker line shows up within the
+// first few lines; this just keeps a large file with no marker at all from
+// being scanned in full just to fail detection.
+const maxDetectLines = 1000
+
+// DetectFormat reports which coverage format r looks like, without fully
+// parsing it. It scans r line by line -- rather than substring-matching
+// the first 1024 bytes, which used to classify any text containing "SF:"
+// anywhere in that prefix as LCOV and miss a real tracefile whose first
+// record started past it -- looking for a line that starts with "SF:" or
+// is exactly "end_of_record" (LCOV), or a line containing "<?xml" or
+// "<coverage" (Cobertura). It consumes from r as it scans, so a caller
+// that still needs the content afterward (e.g. to hand r to a parser)
+// must rewind it first, the way cmd/litecov does with f.Seek(0, 0).
 func DetectFormat(r io.Reader) (string, error) {
-	buf := make([]byte, 1024)
-	n, err := bufio.NewReader(r).Read(buf)
-	if err != nil && err != io.EOF {
+	scanner := bufio.NewScanner(r)
+	// Some tools emit Cobertura XML as a single unindented line; the
+	// scanner's default 64KB token limit can be too tight for a large
+	// report, so give it more room before it gives up on a line.
+	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
+
+	for lines := 0; lines < maxDetectLines && scanner.Scan(); lines++ {
+		line := scanner.Text()
+
+		if strings.Contains(line, "<?xml") || strings.Contains(line, "<coverage") {
+			return "cobertura", nil
+		}
+
+		if strings.HasPrefix(line, "SF:") || line == "end_of_record" {
+			return "lcov", nil
+		}
+	}
+	if err := scanner.Err(); err != nil {
 		return "", err
-	}
-
-	content := string(buf[:n])
-
-	if strings.Contains(content, "<?xml") || strings.Contains(content, "<coverage") {
-		return "cobertura", nil
-	}
-
-	if strings.Contains(content, "SF:") || strings.Contains(content, "end_of_record") {
-		return "lcov", nil
 	}
 
 	return "", ErrUnknownFormat
