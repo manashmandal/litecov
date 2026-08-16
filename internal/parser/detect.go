@@ -3,12 +3,25 @@ package parser
 import (
 	"bufio"
 	"errors"
+	"fmt"
 	"io"
 	"path/filepath"
 	"strings"
 )
 
 var ErrUnknownFormat = errors.New("unable to detect coverage format")
+
+// ErrUnsupportedFormat is returned when DetectFormat recognizes the input as
+// a coverage report but not one litecov has a parser for. Unlike
+// ErrUnknownFormat -- "this isn't any coverage format we recognize" -- this
+// means "we know what this is, litecov just doesn't read it": Clover XML
+// (PHPUnit, and the clover reporter in Jest/Vitest) and JaCoCo's native XML
+// both use "<coverage>" or their own root element the way Cobertura does,
+// and Codecov routes each to its own processor (clover.py, jacoco.py)
+// instead of the Cobertura one. Litecov has no equivalent processors, so it
+// reports the mismatch by name instead of guessing Cobertura (see issue
+// #71).
+var ErrUnsupportedFormat = errors.New("litecov only parses lcov and cobertura")
 
 // maxDetectLines bounds how many lines DetectFormat reads before giving up.
 // A real LCOV or Cobertura file's first marker line shows up within the
@@ -21,8 +34,15 @@ const maxDetectLines = 1000
 // the first 1024 bytes, which used to classify any text containing "SF:"
 // anywhere in that prefix as LCOV and miss a real tracefile whose first
 // record started past it -- looking for a line that starts with "SF:" or
-// is exactly "end_of_record" (LCOV), or a line containing "<?xml" or
-// "<coverage" (Cobertura). It consumes from r as it scans, so a caller
+// is exactly "end_of_record" (LCOV), or a line containing "<coverage"
+// with no clover= attribute (Cobertura). A bare "<?xml" declaration used
+// to be treated as a Cobertura signal on its own, but every XML dialect
+// opens with one, so that matched Clover and JaCoCo input just as
+// readily as real Cobertura and routed both into CoberturaParser. A
+// "<coverage clover=...>" line (Clover) or a line containing "<report"
+// (JaCoCo) is now recognized as XML litecov doesn't parse and reported
+// as ErrUnsupportedFormat naming what was found, instead of being
+// guessed as Cobertura. It consumes from r as it scans, so a caller
 // that still needs the content afterward (e.g. to hand r to a parser)
 // must rewind it first, the way cmd/litecov does with f.Seek(0, 0).
 func DetectFormat(r io.Reader) (string, error) {
@@ -35,8 +55,15 @@ func DetectFormat(r io.Reader) (string, error) {
 	for lines := 0; lines < maxDetectLines && scanner.Scan(); lines++ {
 		line := scanner.Text()
 
-		if strings.Contains(line, "<?xml") || strings.Contains(line, "<coverage") {
+		if strings.Contains(line, "<coverage") {
+			if strings.Contains(line, "clover=") {
+				return "", fmt.Errorf("detected Clover XML (root <coverage clover=...>): %w", ErrUnsupportedFormat)
+			}
 			return "cobertura", nil
+		}
+
+		if strings.Contains(line, "<report") {
+			return "", fmt.Errorf("detected JaCoCo XML (root <report>): %w", ErrUnsupportedFormat)
 		}
 
 		if strings.HasPrefix(line, "SF:") || line == "end_of_record" {
