@@ -4,6 +4,7 @@ package paths
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -271,4 +272,120 @@ func trimDoubledWorkspaceSegment(path string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// NormalizeCoveragePath applies the baseline normalization every coverage
+// report path needs before it's compared against a changed file: Windows
+// backslash separators are converted to slashes, ".." and "." segments are
+// collapsed, a leading "./" is stripped, and a doubled GITHUB_WORKSPACE
+// checkout segment (".../<repo>/<repo>/...") is stripped when the path is
+// absolute. See issue #19: a report produced on a Windows runner (Coverlet,
+// or any tool run on windows-latest), or one containing a "../" segment
+// like coverage.py and istanbul both emit in some configurations,
+// previously matched nothing.
+//
+// A bare leading "/" on any other absolute path is deliberately left in
+// place: HasSuffix's isPathWrapperPrefix treats a leading "/" as the signal
+// that a prefix is a wrapper around a repo-relative path (a pytest-cov
+// style absolute path) rather than an unrelated sibling directory, and
+// stripping it here would erase that signal before suffix matching ever
+// runs.
+func NormalizeCoveragePath(p string) string {
+	if p == "" {
+		return p
+	}
+	// filepath.ToSlash only converts using the current OS's path separator,
+	// and this binary always runs inside the (Linux) Docker image the
+	// action ships, so it would be a no-op there. Replace backslashes
+	// unconditionally instead of relying on it.
+	p = strings.ReplaceAll(p, `\`, "/")
+	if strings.HasPrefix(p, "/") {
+		if rel, ok := trimDoubledWorkspaceSegment(p); ok {
+			p = rel
+		}
+	}
+	// path.Clean, not filepath.Clean: this is a slash-separated virtual
+	// path being matched against a git tree, not a real OS filesystem
+	// path, so cleaning it must not depend on the OS this binary happens
+	// to run on.
+	p = path.Clean(p)
+	p = strings.TrimPrefix(p, "./")
+	return p
+}
+
+// StripPathPrefix removes prefix from the front of p when present, backing
+// the path-prefix input for a coverage report generated inside a
+// subdirectory. prefix may or may not have a trailing slash; either way a
+// "/" boundary is required so a configured prefix of "backend" doesn't also
+// strip an unrelated "backendx/foo.go".
+func StripPathPrefix(p, prefix string) string {
+	if prefix == "" {
+		return p
+	}
+	prefix = strings.TrimSuffix(prefix, "/")
+	if p == prefix {
+		return ""
+	}
+	if strings.HasPrefix(p, prefix+"/") {
+		return p[len(prefix)+1:]
+	}
+	return p
+}
+
+// PathFix is a single "before::after" path rewrite rule parsed from the
+// path-fixes input, mirroring a codecov.yml fixes: entry: a leading Before
+// is replaced with After, an empty Before prepends After to every path
+// ("move root" in codecov's terms), and an empty After strips Before with
+// nothing put back in its place ("reduce root").
+type PathFix struct {
+	Before string
+	After  string
+}
+
+// ParsePathFixes parses the path-fixes input: one "before::after" rule per
+// line, the same shorthand codecov.yml's fixes: list uses. Blank lines and
+// lines missing the "::" separator are skipped rather than erroring, since
+// there's no channel to surface a validation failure back to the run.
+func ParsePathFixes(raw string) []PathFix {
+	var fixes []PathFix
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		before, after, ok := strings.Cut(line, "::")
+		if !ok {
+			continue
+		}
+		fixes = append(fixes, PathFix{Before: before, After: after})
+	}
+	return fixes
+}
+
+// ApplyPathFixes rewrites p using the first rule in fixes whose Before
+// matches, the same "first match wins" semantics codecov's fixes: uses.
+// Unlike codecov this only matches a literal leading path segment, not a
+// glob or regex.
+func ApplyPathFixes(p string, fixes []PathFix) string {
+	for _, fix := range fixes {
+		if fix.Before == "" {
+			return fix.After + p
+		}
+		if stripped := StripPathPrefix(p, fix.Before); stripped != p {
+			return fix.After + stripped
+		}
+	}
+	return p
+}
+
+// NormalizeAndFixPath runs the full coverage-report path pipeline on a
+// single path: baseline normalization first, then the path-prefix strip,
+// then the path-fixes rules, so a caller with a whole report only needs one
+// call per file. prefix and fixes are both optional; pass "" and nil to
+// skip them.
+func NormalizeAndFixPath(p, prefix string, fixes []PathFix) string {
+	p = NormalizeCoveragePath(p)
+	p = StripPathPrefix(p, prefix)
+	p = ApplyPathFixes(p, fixes)
+	return p
 }

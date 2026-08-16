@@ -205,6 +205,247 @@ func TestHasSuffix(t *testing.T) {
 	}
 }
 
+// TestNormalizeCoveragePath covers issue #19: coverage report paths were
+// compared against GitHub's changed file list exactly as both sides
+// produced them, so a report using backslash separators (a Windows runner,
+// e.g. Coverlet) or containing an unclean ".." segment (coverage.py and
+// istanbul both emit these in some configurations) never matched.
+func TestNormalizeCoveragePath(t *testing.T) {
+	tests := []struct {
+		name     string
+		path     string
+		expected string
+	}{
+		// The exact repro from issue #19.
+		{"backslash separators from a Windows runner", `src\Foo\Bar.py`, "src/Foo/Bar.py"},
+		{"unclean path with a .. segment", "src/Foo/../Foo/Bar.py", "src/Foo/Bar.py"},
+		// Combination of both in one path.
+		{"backslashes and a .. segment together", `src\Foo\..\Foo\Bar.py`, "src/Foo/Bar.py"},
+		// Leading "./" is stripped.
+		{"leading dot-slash", "./src/foo.py", "src/foo.py"},
+		// GITHUB_WORKSPACE checks the repo out to .../<repo>/<repo>, so a
+		// doubled path segment is stripped when the path is absolute.
+		{"doubled GITHUB_WORKSPACE segment", "/home/runner/work/repo/repo/src/foo.py", "src/foo.py"},
+		// Already clean paths are left alone.
+		{"already clean relative path", "internal/foo.go", "internal/foo.go"},
+		{"empty path", "", ""},
+		// An absolute path that isn't a recognized GITHUB_WORKSPACE
+		// checkout must keep its leading "/": HasSuffix's
+		// isPathWrapperPrefix relies on that leading "/" to tell an
+		// absolute-path wrapper apart from a genuine sibling directory, and
+		// stripping it unconditionally here would break that check for
+		// every other absolute-path coverage tool (e.g. pytest-cov).
+		{"absolute path without a doubled segment stays absolute",
+			"/home/runner/work/repo/src/mypackage/module.py",
+			"/home/runner/work/repo/src/mypackage/module.py"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := NormalizeCoveragePath(tt.path); got != tt.expected {
+				t.Errorf("NormalizeCoveragePath(%q) = %q, want %q", tt.path, got, tt.expected)
+			}
+		})
+	}
+}
+
+// TestFindMatchingChangedFileNormalized proves the actual fix for issue
+// #19's repro: FindMatchingChangedFile is not itself normalization-aware
+// (it stays a plain string matcher), but every caller runs
+// NormalizeCoveragePath over a report's paths before handing them to it, so
+// the two repro paths now resolve to the changed file instead of nothing.
+func TestFindMatchingChangedFileNormalized(t *testing.T) {
+	changedSet := map[string]bool{"src/Foo/Bar.py": true}
+
+	tests := []struct {
+		name         string
+		coveragePath string
+	}{
+		{"backslash separators", `src\Foo\Bar.py`},
+		{"unclean .. segment", "src/Foo/../Foo/Bar.py"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			normalized := NormalizeCoveragePath(tt.coveragePath)
+			if got := FindMatchingChangedFile(normalized, changedSet); got != "src/Foo/Bar.py" {
+				t.Errorf("FindMatchingChangedFile(NormalizeCoveragePath(%q), ...) = %q, want %q",
+					tt.coveragePath, got, "src/Foo/Bar.py")
+			}
+		})
+	}
+}
+
+// TestStripPathPrefix covers the path-prefix input (issue #19): a coverage
+// report generated inside a subdirectory needs that subdirectory stripped
+// before it lines up with GitHub's repo-root-relative changed file paths.
+func TestStripPathPrefix(t *testing.T) {
+	tests := []struct {
+		path     string
+		prefix   string
+		expected string
+	}{
+		{"backend/src/foo.py", "backend/", "src/foo.py"},
+		// Trailing slash on prefix is optional.
+		{"backend/src/foo.py", "backend", "src/foo.py"},
+		// Exact match strips down to nothing.
+		{"backend", "backend/", ""},
+		// No prefix configured is a no-op.
+		{"src/foo.py", "", "src/foo.py"},
+		// No match leaves the path untouched.
+		{"other/foo.py", "backend/", "other/foo.py"},
+		// A "/" boundary is required: "backend" must not strip a sibling
+		// directory that merely starts with the same letters.
+		{"backendx/foo.py", "backend", "backendx/foo.py"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.path+"_"+tt.prefix, func(t *testing.T) {
+			if got := StripPathPrefix(tt.path, tt.prefix); got != tt.expected {
+				t.Errorf("StripPathPrefix(%q, %q) = %q, want %q", tt.path, tt.prefix, got, tt.expected)
+			}
+		})
+	}
+}
+
+// TestParsePathFixes covers the path-fixes input (issue #19), one
+// "before::after" rule per line matching codecov.yml's fixes: shorthand.
+func TestParsePathFixes(t *testing.T) {
+	raw := "before/::after/\n" +
+		"::root/\n" +
+		"drop/::\n" +
+		"\n" +
+		"  \n" +
+		"not-a-rule\n"
+
+	got := ParsePathFixes(raw)
+	want := []PathFix{
+		{Before: "before/", After: "after/"},
+		{Before: "", After: "root/"},
+		{Before: "drop/", After: ""},
+	}
+
+	if len(got) != len(want) {
+		t.Fatalf("ParsePathFixes() returned %d rules, want %d: %+v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("ParsePathFixes()[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+// TestApplyPathFixes covers the three fixes: forms from codecov.yml that
+// issue #19 asks path-fixes to mirror: moving a path, moving the root, and
+// reducing the root.
+func TestApplyPathFixes(t *testing.T) {
+	tests := []struct {
+		name     string
+		path     string
+		fixes    []PathFix
+		expected string
+	}{
+		{
+			name:     "move path: before/::after/",
+			path:     "before/foo.py",
+			fixes:    []PathFix{{Before: "before/", After: "after/"}},
+			expected: "after/foo.py",
+		},
+		{
+			name:     "move root: ::after/ prepends to every path",
+			path:     "src/foo.py",
+			fixes:    []PathFix{{Before: "", After: "backend/"}},
+			expected: "backend/src/foo.py",
+		},
+		{
+			name:     "reduce root: before/:: strips with nothing put back",
+			path:     "before/foo.py",
+			fixes:    []PathFix{{Before: "before/", After: ""}},
+			expected: "foo.py",
+		},
+		{
+			name:     "no matching rule leaves the path untouched",
+			path:     "src/foo.py",
+			fixes:    []PathFix{{Before: "other/", After: "else/"}},
+			expected: "src/foo.py",
+		},
+		{
+			name:     "no rules configured is a no-op",
+			path:     "src/foo.py",
+			fixes:    nil,
+			expected: "src/foo.py",
+		},
+		{
+			name: "first matching rule wins",
+			path: "before/foo.py",
+			fixes: []PathFix{
+				{Before: "before/", After: "first/"},
+				{Before: "before/", After: "second/"},
+			},
+			expected: "first/foo.py",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ApplyPathFixes(tt.path, tt.fixes); got != tt.expected {
+				t.Errorf("ApplyPathFixes(%q, %+v) = %q, want %q", tt.path, tt.fixes, got, tt.expected)
+			}
+		})
+	}
+}
+
+// TestNormalizeAndFixPath covers the full per-file pipeline main.go runs
+// over a parsed report (issue #19): baseline normalization, then
+// path-prefix, then path-fixes.
+func TestNormalizeAndFixPath(t *testing.T) {
+	tests := []struct {
+		name     string
+		path     string
+		prefix   string
+		fixes    []PathFix
+		expected string
+	}{
+		{
+			name:     "baseline normalization only",
+			path:     `src\Foo\..\Foo\Bar.py`,
+			prefix:   "",
+			fixes:    nil,
+			expected: "src/Foo/Bar.py",
+		},
+		{
+			name:     "subdirectory report needs the prefix stripped",
+			path:     "backend/src/foo.py",
+			prefix:   "backend/",
+			fixes:    nil,
+			expected: "src/foo.py",
+		},
+		{
+			name:     "backslashes normalized before the prefix is stripped",
+			path:     `backend\src\foo.py`,
+			prefix:   "backend/",
+			fixes:    nil,
+			expected: "src/foo.py",
+		},
+		{
+			name:     "prefix and fixes both apply, in order",
+			path:     "backend/old/foo.py",
+			prefix:   "backend/",
+			fixes:    []PathFix{{Before: "old/", After: "new/"}},
+			expected: "new/foo.py",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := NormalizeAndFixPath(tt.path, tt.prefix, tt.fixes); got != tt.expected {
+				t.Errorf("NormalizeAndFixPath(%q, %q, %+v) = %q, want %q",
+					tt.path, tt.prefix, tt.fixes, got, tt.expected)
+			}
+		})
+	}
+}
+
 func TestNormalizePathForAnnotation(t *testing.T) {
 	tests := []struct {
 		path     string

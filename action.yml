@@ -37,6 +37,12 @@ inputs:
     description: 'Base branch name for display in diff header'
     required: false
     default: 'main'
+  path-prefix:
+    description: 'Prefix to strip from every coverage report path, e.g. "backend/"'
+    required: false
+  path-fixes:
+    description: 'Newline separated "before::after" path rewrite rules, same shorthand as Codecov''s fixes:'
+    required: false
   token:
     description: 'GitHub token'
     required: false
@@ -65,3 +71,5 @@ runs:
     INPUT_ANNOTATIONS: ${{ inputs.annotations }}
     INPUT_BASE_COVERAGE_FILE: ${{ inputs.base-coverage-file }}
     INPUT_BASE_BRANCH: ${{ inputs.base-branch }}
+    INPUT_PATH_PREFIX: ${{ inputs.path-prefix }}
+    INPUT_PATH_FIXES: ${{ inputs.path-fixes }}

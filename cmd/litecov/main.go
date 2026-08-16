@@ -23,6 +23,8 @@ func main() {
 	annotations := flag.Bool("annotations", false, "Output GitHub annotations for uncovered lines")
 	baseCoverageFile := flag.String("base-coverage-file", "", "Path to base branch coverage file for comparison")
 	baseBranch := flag.String("base-branch", "main", "Base branch name for comparison display")
+	pathPrefix := flag.String("path-prefix", "", "Prefix to strip from every coverage report path, e.g. \"backend/\"")
+	pathFixesInput := flag.String("path-fixes", "", "Newline separated \"before::after\" path rewrite rules, matching Codecov's fixes:")
 	flag.Parse()
 
 	// Environment variable overrides for GitHub Action
@@ -32,6 +34,13 @@ func main() {
 	if envBaseBranch := os.Getenv("INPUT_BASE_BRANCH"); envBaseBranch != "" {
 		*baseBranch = envBaseBranch
 	}
+	if *pathPrefix == "" {
+		*pathPrefix = os.Getenv("INPUT_PATH_PREFIX")
+	}
+	if *pathFixesInput == "" {
+		*pathFixesInput = os.Getenv("INPUT_PATH_FIXES")
+	}
+	pathFixRules := paths.ParsePathFixes(*pathFixesInput)
 
 	token := os.Getenv("GITHUB_TOKEN")
 	repository := os.Getenv("GITHUB_REPOSITORY")
@@ -95,6 +104,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Failed to parse coverage: %v\n", err)
 		os.Exit(1)
 	}
+	normalizeReportPaths(report.Files, *pathPrefix, pathFixRules)
 
 	// Parse base coverage if provided
 	var baseReport *coverage.Report
@@ -106,6 +116,7 @@ func main() {
 				if bp, err := parser.GetParser(detected); err == nil {
 					baseReport, _ = bp.Parse(baseFile)
 					if baseReport != nil {
+						normalizeReportPaths(baseReport.Files, *pathPrefix, pathFixRules)
 						fmt.Printf("Loaded base coverage from: %s (%.2f%%)\n", *baseCoverageFile, baseReport.Coverage)
 					}
 				}
@@ -122,6 +133,12 @@ func main() {
 		changedFiles, err = gh.GetChangedFiles(prNumber)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: Failed to get changed files: %v\n", err)
+		}
+		// GitHub's changed-file paths are already clean, but normalize them
+		// too so both sides of every later comparison went through the
+		// same rules (issue #19).
+		for i, cf := range changedFiles {
+			changedFiles[i] = paths.NormalizeCoveragePath(cf)
 		}
 	}
 
@@ -239,6 +256,18 @@ func getPRNumber(eventPath string) (int, error) {
 		}
 	}
 	return 0, nil
+}
+
+// normalizeReportPaths rewrites every file path in files so coverage-tool
+// quirks (Windows separators, an unclean ".." segment, an absolute
+// GITHUB_WORKSPACE prefix, or the subdirectory the report was generated in)
+// don't stop them from matching GitHub's changed-file paths later on.
+// prefix and fixes come from the path-prefix and path-fixes inputs and are
+// both optional (issue #19).
+func normalizeReportPaths(files []coverage.FileCoverage, prefix string, fixes []paths.PathFix) {
+	for i := range files {
+		files[i].Path = paths.NormalizeAndFixPath(files[i].Path, prefix, fixes)
+	}
 }
 
 func detectCoverageFile() string {
