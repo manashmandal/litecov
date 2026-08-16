@@ -103,8 +103,57 @@ DA:1,1`
 	if err != nil {
 		t.Fatalf("Parse() error = %v", err)
 	}
-	if len(report.Files) != 0 {
-		t.Errorf("got %d files, want 0 (no end_of_record)", len(report.Files))
+	if len(report.Files) != 1 {
+		t.Fatalf("got %d files, want 1 (trailing record without end_of_record must still be flushed)", len(report.Files))
+	}
+	if report.Files[0].Path != "/src/test.go" {
+		t.Errorf("Files[0].Path = %v, want /src/test.go", report.Files[0].Path)
+	}
+	if report.Files[0].LinesCovered != 1 {
+		t.Errorf("LinesCovered = %v, want 1", report.Files[0].LinesCovered)
+	}
+	if report.Files[0].LinesTotal != 1 {
+		t.Errorf("LinesTotal = %v, want 1", report.Files[0].LinesTotal)
+	}
+}
+
+func TestLCOVParser_Parse_MultipleRecordsLastMissingEndOfRecord(t *testing.T) {
+	// Mirrors the repro in issue #61: a truncated tracefile where every
+	// record but the last is properly closed.
+	lcov := `SF:/src/a.js
+DA:1,1
+DA:2,1
+LF:2
+LH:2
+end_of_record
+SF:/src/b.js
+DA:1,0
+DA:2,0
+DA:3,0
+LF:3
+LH:0`
+	p := &LCOVParser{}
+	report, err := p.Parse(strings.NewReader(lcov))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if len(report.Files) != 2 {
+		t.Fatalf("got %d files, want 2 (trailing record must not be dropped)", len(report.Files))
+	}
+	if report.Files[1].Path != "/src/b.js" {
+		t.Errorf("Files[1].Path = %v, want /src/b.js", report.Files[1].Path)
+	}
+	if report.Files[1].LinesCovered != 0 {
+		t.Errorf("Files[1].LinesCovered = %v, want 0", report.Files[1].LinesCovered)
+	}
+	if report.Files[1].LinesTotal != 3 {
+		t.Errorf("Files[1].LinesTotal = %v, want 3", report.Files[1].LinesTotal)
+	}
+	if report.TotalCovered != 2 {
+		t.Errorf("TotalCovered = %v, want 2", report.TotalCovered)
+	}
+	if report.TotalLines != 5 {
+		t.Errorf("TotalLines = %v, want 5", report.TotalLines)
 	}
 }
 

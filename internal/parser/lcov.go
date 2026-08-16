@@ -82,6 +82,12 @@ func (p *LCOVParser) Parse(r io.Reader) (*coverage.Report, error) {
 		return nil, err
 	}
 
+	// Flush a trailing record that has no closing end_of_record, e.g. a
+	// tracefile truncated by a killed test run or a cut-short upload.
+	if current != nil {
+		report.Files = append(report.Files, *current)
+	}
+
 	report.Calculate()
 	return report, nil
 }
