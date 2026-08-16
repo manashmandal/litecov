@@ -244,6 +244,62 @@ func TestCoberturaParser_Parse_ZeroAndMissingLineNumbersDoNotCollide(t *testing.
 	}
 }
 
+func TestCoberturaParser_Parse_ClassWithoutFilenameSkipped(t *testing.T) {
+	// Mirrors issue #64: Parse used class.Filename as the fileMap key without
+	// checking it was set. A <class> with no filename attribute, or with
+	// filename="", decoded to Path "", so every such class in the report
+	// merged into one bogus entry instead of being dropped. Codecov's own
+	// cobertura parser skips these classes outright, so litecov should too.
+	tests := []struct {
+		name string
+		xml  string
+	}{
+		{
+			name: "filename attribute absent",
+			xml: `<?xml version="1.0"?>
+<coverage><packages><package name="p"><classes>
+<class name="A"><lines><line number="1" hits="1"/></lines></class>
+<class name="C" filename="real.py"><lines><line number="1" hits="1"/></lines></class>
+</classes></package></packages></coverage>`,
+		},
+		{
+			name: "filename attribute empty",
+			xml: `<?xml version="1.0"?>
+<coverage><packages><package name="p"><classes>
+<class name="A" filename=""><lines><line number="1" hits="1"/></lines></class>
+<class name="C" filename="real.py"><lines><line number="1" hits="1"/></lines></class>
+</classes></package></packages></coverage>`,
+		},
+		{
+			name: "filename attribute whitespace-only",
+			xml: `<?xml version="1.0"?>
+<coverage><packages><package name="p"><classes>
+<class name="A" filename="   "><lines><line number="1" hits="1"/></lines></class>
+<class name="C" filename="real.py"><lines><line number="1" hits="1"/></lines></class>
+</classes></package></packages></coverage>`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := &CoberturaParser{}
+			report, err := p.Parse(strings.NewReader(tt.xml))
+			if err != nil {
+				t.Fatalf("Parse() error = %v", err)
+			}
+			if len(report.Files) != 1 {
+				t.Fatalf("got %d files, want 1 (class with no filename must be skipped)", len(report.Files))
+			}
+			if report.Files[0].Path != "real.py" {
+				t.Errorf("Path = %q, want %q", report.Files[0].Path, "real.py")
+			}
+			if report.Files[0].LinesTotal != 1 {
+				t.Errorf("LinesTotal = %v, want 1", report.Files[0].LinesTotal)
+			}
+		})
+	}
+}
+
 func TestCoberturaParser_Parse_UncoveredLines(t *testing.T) {
 	xml := `<?xml version="1.0"?>
 <coverage>

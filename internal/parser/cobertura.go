@@ -51,6 +51,14 @@ func (p *CoberturaParser) Parse(r io.Reader) (*coverage.Report, error) {
 
 	for _, pkg := range cov.Packages {
 		for _, class := range pkg.Classes {
+			// A <class> with no filename attribute, or filename="", has no
+			// file to attribute lines to. Without this check it falls
+			// through to fileMap[""] below and merges with every other
+			// filename-less class in the report (see issue #64). Codecov's
+			// cobertura parser skips these classes outright; match that.
+			if strings.TrimSpace(class.Filename) == "" {
+				continue
+			}
 			// Resolve the filename using sources if available
 			filename := resolveFilename(class.Filename, cov.Sources)
 
