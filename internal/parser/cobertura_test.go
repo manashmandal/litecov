@@ -443,6 +443,111 @@ func TestCoberturaParser_Parse_AllLinesRejectedSkipped(t *testing.T) {
 	}
 }
 
+func TestCoberturaParser_Parse_SourcePrefixResolution(t *testing.T) {
+	// Mirrors issue #50: resolveFilename stripped a <source> prefix with a
+	// raw strings.HasPrefix and no path-boundary check, and returned on the
+	// first matching source rather than the longest (most specific) one.
+	tests := []struct {
+		name     string
+		sources  []string
+		filename string
+		want     string
+	}{
+		{
+			name:     "prefix must match on a path boundary, not mid-segment",
+			sources:  []string{"/build/src"},
+			filename: "/build/srcgen/Generated.cs",
+			// "/build/srcgen" is a sibling directory, not something under
+			// "/build/src". The raw HasPrefix check used to strip "/build/src"
+			// off anyway, leaving the nonsense "gen/Generated.cs". With no
+			// real match, the filename comes back unresolved.
+			want: "/build/srcgen/Generated.cs",
+		},
+		{
+			name:     "longest matching source wins over a shallower one",
+			sources:  []string{"/build/src", "/build/src/MyApp"},
+			filename: "/build/src/MyApp/Real.cs",
+			// Both sources match. The deeper, more specific one is the one
+			// that actually produced this file and must be the one
+			// stripped, leaving "Real.cs" rather than "MyApp/Real.cs".
+			want: "Real.cs",
+		},
+		{
+			name:     "source list order must not affect which one wins",
+			sources:  []string{"/build/src/MyApp", "/build/src"},
+			filename: "/build/src/MyApp/Real.cs",
+			want:     "Real.cs",
+		},
+		{
+			name:     "single boundary match still resolves normally",
+			sources:  []string{"/build/src"},
+			filename: "/build/src/MyApp/Real.cs",
+			want:     "MyApp/Real.cs",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var sourcesXML strings.Builder
+			for _, s := range tt.sources {
+				sourcesXML.WriteString("<source>" + s + "</source>")
+			}
+			xmlDoc := `<?xml version="1.0"?>
+<coverage><sources>` + sourcesXML.String() + `</sources><packages><package name="p"><classes>
+<class name="A" filename="` + tt.filename + `"><lines><line number="1" hits="1"/></lines></class>
+</classes></package></packages></coverage>`
+
+			p := &CoberturaParser{}
+			report, err := p.Parse(strings.NewReader(xmlDoc))
+			if err != nil {
+				t.Fatalf("Parse() error = %v", err)
+			}
+			if len(report.Files) != 1 {
+				t.Fatalf("got %d files, want 1", len(report.Files))
+			}
+			if report.Files[0].Path != tt.want {
+				t.Errorf("Path = %q, want %q", report.Files[0].Path, tt.want)
+			}
+		})
+	}
+}
+
+func TestCoberturaParser_Parse_NestedSourcesRepro(t *testing.T) {
+	// The exact repro from issue #50: two <source> roots, one nested inside
+	// the other, and two classes -- one under a same-named sibling directory
+	// that must not resolve at all, one under the nested root that must
+	// resolve against the deeper, more specific source.
+	xml := `<?xml version="1.0"?>
+<coverage>
+  <sources>
+    <source>/build/src</source>
+    <source>/build/src/MyApp</source>
+  </sources>
+  <packages><package name="p"><classes>
+    <class name="A" filename="/build/srcgen/Generated.cs"><lines><line number="1" hits="1"/></lines></class>
+    <class name="B" filename="/build/src/MyApp/Real.cs"><lines><line number="1" hits="1"/></lines></class>
+  </classes></package></packages>
+</coverage>`
+	p := &CoberturaParser{}
+	report, err := p.Parse(strings.NewReader(xml))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if len(report.Files) != 2 {
+		t.Fatalf("got %d files, want 2", len(report.Files))
+	}
+	got := map[string]bool{}
+	for _, f := range report.Files {
+		got[f.Path] = true
+	}
+	if !got["/build/srcgen/Generated.cs"] {
+		t.Errorf("files = %v, want the sibling directory left unresolved as /build/srcgen/Generated.cs", got)
+	}
+	if !got["Real.cs"] {
+		t.Errorf("files = %v, want Real.cs resolved against the deeper /build/src/MyApp source", got)
+	}
+}
+
 func TestCoberturaParser_Parse_UncoveredLines(t *testing.T) {
 	xml := `<?xml version="1.0"?>
 <coverage>

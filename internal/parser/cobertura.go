@@ -177,19 +177,33 @@ func parseCoberturaHits(raw string) bool {
 func resolveFilename(filename string, sources []string) string {
 	// If filename is already absolute, try to make it relative using sources
 	if filepath.IsAbs(filename) {
+		filename = filepath.Clean(filename)
+		bestSourceLen := -1
+		bestRel := ""
 		for _, source := range sources {
 			source = strings.TrimSpace(source)
 			if source == "" {
 				continue
 			}
-			// If filename starts with source, extract relative path
-			if strings.HasPrefix(filename, source) {
-				rel := strings.TrimPrefix(filename, source)
-				rel = strings.TrimPrefix(rel, "/")
-				if rel != "" {
-					return rel
-				}
+			source = filepath.Clean(source)
+			rel, ok := trimSourceDir(filename, source)
+			if !ok {
+				continue
 			}
+			// Prefer the longest (most specific) matching source. With
+			// nested roots like "/build/src" and "/build/src/MyApp" both
+			// configured, the deeper one is the one that actually produced
+			// this file; returning on the first match instead let a
+			// shallower parent win and left the result still carrying the
+			// inner directory, e.g. "MyApp/Real.cs" instead of "Real.cs".
+			// See issue #50.
+			if len(source) > bestSourceLen {
+				bestSourceLen = len(source)
+				bestRel = rel
+			}
+		}
+		if bestSourceLen >= 0 {
+			return bestRel
 		}
 		// Couldn't resolve with sources, return as-is
 		return filename
@@ -210,6 +224,32 @@ func resolveFilename(filename string, sources []string) string {
 	}
 
 	return filename
+}
+
+// trimSourceDir reports whether filename lives inside the directory source
+// and, if so, returns filename's path relative to source. filename and
+// source are assumed already filepath.Clean'd.
+//
+// The match must land on a full path-segment boundary -- source itself
+// followed by "/" -- not just a shared string prefix: a source of
+// "/build/src" must match "/build/src/MyApp/Real.cs" but not a same-named
+// sibling like "/build/srcgen/Generated.cs". A plain
+// strings.HasPrefix(filename, source) allowed exactly that, silently eating
+// the first few characters of the sibling directory's name; see issue #50.
+func trimSourceDir(filename, source string) (rel string, ok bool) {
+	if source == "/" {
+		if len(filename) <= 1 {
+			return "", false
+		}
+		return filename[1:], true
+	}
+	if !strings.HasPrefix(filename, source) || len(filename) == len(source) {
+		return "", false
+	}
+	if filename[len(source)] != '/' {
+		return "", false
+	}
+	return filename[len(source)+1:], true
 }
 
 // extractProjectPath attempts to extract a project-relative path from a source directory.
