@@ -2,6 +2,7 @@ package parser
 
 import (
 	"encoding/xml"
+	"errors"
 	"io"
 	"path/filepath"
 	"sort"
@@ -12,6 +13,16 @@ import (
 )
 
 type CoberturaParser struct{}
+
+// ErrNoCoberturaCoverageData is returned when a parse produces no file with
+// any line data: a report with no <class> elements at all (an empty
+// <packages/>, or a bare <coverage/> with no <packages> either), or one
+// where every <class> was dropped by the missing-filename or empty-lines
+// guards in Parse below. Mirrors ErrNoCoverageData in lcov.go -- Codecov
+// treats a report it can't extract files from as a processing error rather
+// than a real result, so the caller should reject it instead of publishing
+// a fabricated 0% coverage number; see issue #58.
+var ErrNoCoberturaCoverageData = errors.New("no coverage data found: input contains no valid Cobertura <class> elements")
 
 type coberturaXML struct {
 	XMLName  xml.Name           `xml:"coverage"`
@@ -111,6 +122,14 @@ func (p *CoberturaParser) Parse(r io.Reader) (*coverage.Report, error) {
 	}
 
 	report.Calculate()
+
+	// See ErrNoCoberturaCoverageData's doc comment: a report with no
+	// <class> elements at all, or one where every class was dropped above,
+	// means there's no coverage data to report, not a genuine 0% result.
+	if len(report.Files) == 0 {
+		return nil, ErrNoCoberturaCoverageData
+	}
+
 	return report, nil
 }
 

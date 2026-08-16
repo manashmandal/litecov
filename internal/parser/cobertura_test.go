@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -153,14 +154,36 @@ func TestCoberturaParser_Parse_InvalidXML(t *testing.T) {
 }
 
 func TestCoberturaParser_Parse_Empty(t *testing.T) {
-	xml := `<?xml version="1.0"?><coverage><packages></packages></coverage>`
-	p := &CoberturaParser{}
-	report, err := p.Parse(strings.NewReader(xml))
-	if err != nil {
-		t.Fatalf("Parse() error = %v", err)
+	// Mirrors the repro in issue #58: a report with no <class> elements
+	// carries no coverage data at all, so it must fail with
+	// ErrNoCoberturaCoverageData instead of coming back as a silent 0%
+	// report -- the same fix TestLCOVParser_Parse_Empty already covers for
+	// LCOV and TestGoProfileParser_Parse_Empty covers for Go profiles.
+	tests := []struct {
+		name string
+		xml  string
+	}{
+		{
+			name: "empty packages",
+			xml:  `<?xml version="1.0"?><coverage><packages></packages></coverage>`,
+		},
+		{
+			name: "bare coverage element",
+			xml:  `<?xml version="1.0"?><coverage/>`,
+		},
 	}
-	if len(report.Files) != 0 {
-		t.Errorf("got %d files, want 0", len(report.Files))
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := &CoberturaParser{}
+			report, err := p.Parse(strings.NewReader(tt.xml))
+			if !errors.Is(err, ErrNoCoberturaCoverageData) {
+				t.Fatalf("Parse() error = %v, want ErrNoCoberturaCoverageData", err)
+			}
+			if report != nil {
+				t.Errorf("got report = %v, want nil", report)
+			}
+		})
 	}
 }
 
