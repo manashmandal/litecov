@@ -15,6 +15,7 @@ func TestDetectFormat(t *testing.T) {
 	}{
 		{"lcov file", "../../testdata/simple.lcov", "lcov"},
 		{"cobertura file", "../../testdata/simple.xml", "cobertura"},
+		{"go profile file", "../../testdata/simple.out", "go"},
 	}
 
 	for _, tt := range tests {
@@ -52,6 +53,22 @@ func TestDetectFormat_EndOfRecord(t *testing.T) {
 	}
 	if format != "lcov" {
 		t.Errorf("DetectFormat() = %v, want lcov", format)
+	}
+}
+
+func TestDetectFormat_GoProfile(t *testing.T) {
+	// Mirrors the repro in issue #73: a Go coverage profile (produced by
+	// `go test -coverprofile=coverage.out`) used to fall through every
+	// case and hit ErrUnknownFormat. Its "mode: " header is now enough to
+	// classify it, the same way Codecov's own Go processor does
+	// (content[:6] == b"mode: ").
+	r := strings.NewReader("mode: set\ngithub.com/x/y/foo.go:10.20,12.3 2 1\ngithub.com/x/y/foo.go:14.2,15.9 1 0\n")
+	format, err := DetectFormat(r)
+	if err != nil {
+		t.Fatalf("DetectFormat() error = %v", err)
+	}
+	if format != "go" {
+		t.Errorf("DetectFormat() = %v, want go", format)
 	}
 }
 
@@ -154,6 +171,7 @@ func TestGetParser(t *testing.T) {
 		{"lcov", false, false},
 		{"cobertura", false, false},
 		{"xml", false, false},
+		{"go", false, false},
 		{"auto", true, false},
 		{"unknown", true, true},
 	}

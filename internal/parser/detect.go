@@ -34,17 +34,20 @@ const maxDetectLines = 1000
 // the first 1024 bytes, which used to classify any text containing "SF:"
 // anywhere in that prefix as LCOV and miss a real tracefile whose first
 // record started past it -- looking for a line that starts with "SF:" or
-// is exactly "end_of_record" (LCOV), or a line containing "<coverage"
-// with no clover= attribute (Cobertura). A bare "<?xml" declaration used
-// to be treated as a Cobertura signal on its own, but every XML dialect
-// opens with one, so that matched Clover and JaCoCo input just as
-// readily as real Cobertura and routed both into CoberturaParser. A
-// "<coverage clover=...>" line (Clover) or a line containing "<report"
-// (JaCoCo) is now recognized as XML litecov doesn't parse and reported
-// as ErrUnsupportedFormat naming what was found, instead of being
-// guessed as Cobertura. It consumes from r as it scans, so a caller
-// that still needs the content afterward (e.g. to hand r to a parser)
-// must rewind it first, the way cmd/litecov does with f.Seek(0, 0).
+// is exactly "end_of_record" (LCOV), a line containing "<coverage" with
+// no clover= attribute (Cobertura), or a line starting with "mode: "
+// (a Go coverage profile's required header, e.g. "mode: set"; Codecov's
+// own Go processor keys on the same prefix -- services/report/languages/
+// go.py). A bare "<?xml" declaration used to be treated as a Cobertura
+// signal on its own, but every XML dialect opens with one, so that
+// matched Clover and JaCoCo input just as readily as real Cobertura and
+// routed both into CoberturaParser. A "<coverage clover=...>" line
+// (Clover) or a line containing "<report" (JaCoCo) is now recognized as
+// XML litecov doesn't parse and reported as ErrUnsupportedFormat naming
+// what was found, instead of being guessed as Cobertura. It consumes
+// from r as it scans, so a caller that still needs the content
+// afterward (e.g. to hand r to a parser) must rewind it first, the way
+// cmd/litecov does with f.Seek(0, 0).
 func DetectFormat(r io.Reader) (string, error) {
 	scanner := bufio.NewScanner(r)
 	// Some tools emit Cobertura XML as a single unindented line; the
@@ -68,6 +71,10 @@ func DetectFormat(r io.Reader) (string, error) {
 
 		if strings.HasPrefix(line, "SF:") || line == "end_of_record" {
 			return "lcov", nil
+		}
+
+		if strings.HasPrefix(line, "mode: ") {
+			return "go", nil
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -95,6 +102,8 @@ func GetParserWithPath(format, coverageFilePath string) (Parser, error) {
 		return parser, nil
 	case "cobertura", "xml":
 		return &CoberturaParser{}, nil
+	case "go":
+		return &GoProfileParser{}, nil
 	case "auto":
 		return nil, nil
 	default:

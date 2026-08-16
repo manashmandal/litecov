@@ -16,7 +16,7 @@ import (
 
 func main() {
 	coverageFile := flag.String("coverage-file", "", "Path to coverage report file")
-	format := flag.String("format", "auto", "Coverage format: auto, lcov, cobertura")
+	format := flag.String("format", "auto", "Coverage format: auto, lcov, cobertura, go")
 	showFiles := flag.String("show-files", "changed", "Files to show: all, changed, threshold:N, worst:N")
 	threshold := flag.Float64("threshold", 0, "Minimum coverage threshold for passing status")
 	title := flag.String("title", "Coverage Report", "Comment title")
@@ -318,4 +318,3 @@ func outputAnnotations(report *coverage.Report, changedFiles []string) {
 		fmt.Printf("::warning file=%s,line=1,title=No Coverage::File has no test coverage\n", changedFile)
 	}
 }
-

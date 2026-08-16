@@ -11,7 +11,7 @@ inputs:
     description: 'Path to coverage report file (auto-detected if not specified)'
     required: false
   format:
-    description: 'Coverage format: auto, lcov, cobertura'
+    description: 'Coverage format: auto, lcov, cobertura, go'
     required: false
     default: 'auto'
   show-files:
