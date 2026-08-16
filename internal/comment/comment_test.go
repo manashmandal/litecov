@@ -112,6 +112,97 @@ func TestFormat_ChangedNoFilter(t *testing.T) {
 	}
 }
 
+func TestFindMissingFiles(t *testing.T) {
+	tests := []struct {
+		name         string
+		coveredPaths []string
+		changedFiles []string
+		expected     []string
+	}{
+		{
+			name:         "new file with no coverage entry is missing",
+			coveredPaths: []string{"src/parser.go"},
+			changedFiles: []string{"src/new_file.go"},
+			expected:     []string{"src/new_file.go"},
+		},
+		{
+			name:         "exact match is not missing",
+			coveredPaths: []string{"internal/parser.go"},
+			changedFiles: []string{"internal/parser.go"},
+			expected:     nil,
+		},
+		{
+			name:         "suffix match through a module wrapper prefix is not missing",
+			coveredPaths: []string{"github.com/user/repo/internal/parser.go"},
+			changedFiles: []string{"internal/parser.go"},
+			expected:     nil,
+		},
+		{
+			// Issue #12: "parser.go" is a raw substring of "myparser.go" but
+			// not the same file, so it must still be reported missing.
+			name:         "filename that is only a raw substring of an unrelated covered path is still missing",
+			coveredPaths: []string{"internal/myparser.go"},
+			changedFiles: []string{"parser.go"},
+			expected:     []string{"parser.go"},
+		},
+		{
+			name:         "non-source files are skipped entirely",
+			coveredPaths: nil,
+			changedFiles: []string{"README.md"},
+			expected:     nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var files []coverage.FileCoverage
+			for _, p := range tt.coveredPaths {
+				files = append(files, coverage.FileCoverage{Path: p, LinesCovered: 1, LinesTotal: 1})
+			}
+			report := &coverage.Report{Files: files}
+
+			got := findMissingFiles(report, tt.changedFiles)
+
+			if len(got) != len(tt.expected) {
+				t.Fatalf("findMissingFiles() = %v, want %v", got, tt.expected)
+			}
+			for i := range got {
+				if got[i] != tt.expected[i] {
+					t.Errorf("findMissingFiles()[%d] = %q, want %q", i, got[i], tt.expected[i])
+				}
+			}
+		})
+	}
+}
+
+func TestFormat_ChangedFile_NotMatchedBySubstring(t *testing.T) {
+	// Issue #12: a new, untested file must not be dropped from the report
+	// just because its name is a substring of an unrelated covered path.
+	report := &coverage.Report{
+		Files: []coverage.FileCoverage{
+			{Path: "internal/myparser.go", LinesCovered: 10, LinesTotal: 10},
+		},
+	}
+	report.Calculate()
+
+	opts := Options{
+		ShowFiles:    "changed",
+		ChangedFiles: []string{"parser.go"},
+	}
+
+	result := Format(report, opts)
+
+	if !strings.Contains(result, "Impacted Files") {
+		t.Fatal("expected an Impacted Files section listing the new file")
+	}
+	if !strings.Contains(result, "parser.go") {
+		t.Error("missing new file parser.go")
+	}
+	if !strings.Contains(result, "no tests") {
+		t.Error("parser.go should be flagged as having no tests")
+	}
+}
+
 func TestFormat_Threshold(t *testing.T) {
 	report := &coverage.Report{
 		Files: []coverage.FileCoverage{
@@ -820,17 +911,17 @@ func TestFormatImpactedFilesWithDelta(t *testing.T) {
 
 	checks := []string{
 		"Impacted Files (4)",
-		"\u0394",         // Delta column header
-		"`+2.10%`",       // positive delta
-		"`new`",          // new file indicator
-		"`\u00f8`",       // zero delta (ø)
-		"`-5.00%`",       // negative delta
+		"\u0394",   // Delta column header
+		"`+2.10%`", // positive delta
+		"`new`",    // new file indicator
+		"`\u00f8`", // zero delta (ø)
+		"`-5.00%`", // negative delta
 		"improved.go",
 		"new.go",
 		"same.go",
 		"worse.go",
-		"\u2705",         // checkmark
-		"\u26A0\uFE0F",   // warning
+		"\u2705",       // checkmark
+		"\u26A0\uFE0F", // warning
 	}
 
 	for _, check := range checks {

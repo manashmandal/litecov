@@ -74,7 +74,7 @@ func findMissingFiles(report *coverage.Report, changedFiles []string) []string {
 			found = true
 		} else {
 			for coveredPath := range coveredPaths {
-				if strings.HasSuffix(coveredPath, changedFile) || strings.HasSuffix(changedFile, coveredPath) {
+				if paths.HasSuffix(coveredPath, changedFile) || paths.HasSuffix(changedFile, coveredPath) {
 					found = true
 					break
 				}
@@ -86,7 +86,6 @@ func findMissingFiles(report *coverage.Report, changedFiles []string) []string {
 	}
 	return missing
 }
-
 
 func FormatWithComparison(comp *coverage.Comparison, opts Options) string {
 	if comp == nil || comp.Head == nil {
