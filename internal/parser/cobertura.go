@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -46,10 +47,15 @@ type coberturaClass struct {
 // one <line> anywhere in the report fails to parse as Go's int (see issue
 // #57). Producers in the wild emit "1.0", "undefined" or an out-of-range
 // value for either attribute, so they're parsed defensively in Parse below
-// instead of trusted to the struct tag.
+// instead of trusted to the struct tag. Branch and ConditionCoverage carry
+// a line's branch data: ConditionCoverage holds a "NN% (taken/total)"
+// ratio, of which only the "(taken/total)" part is parsed, in
+// parseConditionCoverage below (see issue #25).
 type coberturaLine struct {
-	Number string `xml:"number,attr"`
-	Hits   string `xml:"hits,attr"`
+	Number            string `xml:"number,attr"`
+	Hits              string `xml:"hits,attr"`
+	Branch            string `xml:"branch,attr"`
+	ConditionCoverage string `xml:"condition-coverage,attr"`
 }
 
 func (p *CoberturaParser) Parse(r io.Reader) (*coverage.Report, error) {
@@ -98,7 +104,7 @@ func (p *CoberturaParser) Parse(r io.Reader) (*coverage.Report, error) {
 				if !ok {
 					continue
 				}
-				hit := parseCoberturaHits(line.Hits)
+				hit := coberturaLineHit(line)
 				linesHit[filename][lineNum] = linesHit[filename][lineNum] || hit
 			}
 		}
@@ -188,6 +194,51 @@ func parseCoberturaHits(raw string) bool {
 	}
 	f, _ := strconv.ParseFloat(raw, 64)
 	return f > 0
+}
+
+// coberturaLineHit reports whether line counts as a clean covered hit. A
+// plain line falls back to its hits attribute, but a branch line -- one
+// with branch="true" and a well-formed condition-coverage ratio -- is only
+// as covered as that ratio: Codecov's Cobertura processor
+// (services/report/languages/cobertura.py) treats such a line as branch
+// coverage, not a hit count, so coverage.py reporting hits="1" but
+// condition-coverage="50% (1/2)" -- one of two branches taken -- must not
+// read as a full hit. This mirrors lineHit's BRDA: downgrade for LCOV
+// (issue #63): any branch left untaken demotes the line from hit to
+// not-hit even though it ran. A missing or unparseable condition-coverage
+// falls back to the plain hits attribute instead of guessing. See issue
+// #25.
+func coberturaLineHit(line coberturaLine) bool {
+	if strings.EqualFold(strings.TrimSpace(line.Branch), "true") {
+		if taken, total, ok := parseConditionCoverage(line.ConditionCoverage); ok && total > 0 {
+			return taken >= total
+		}
+	}
+	return parseCoberturaHits(line.Hits)
+}
+
+// coberturaConditionCoverageRe extracts the "(taken/total)" ratio from a
+// condition-coverage attribute like "50% (1/2)". Codecov's own Cobertura
+// processor looks for the same shape (re.search(r"\(\d+\/\d+\)", ...))
+// before trusting the value.
+var coberturaConditionCoverageRe = regexp.MustCompile(`\((\d+)/(\d+)\)`)
+
+// parseConditionCoverage parses a condition-coverage attribute's
+// "(taken/total)" ratio and reports whether it found one. A missing
+// attribute, one with no parenthesized ratio, or a ratio with a
+// non-numeric side reports ok = false so the caller falls back to the hits
+// attribute instead of misreading a malformed value.
+func parseConditionCoverage(raw string) (taken, total int, ok bool) {
+	m := coberturaConditionCoverageRe.FindStringSubmatch(raw)
+	if m == nil {
+		return 0, 0, false
+	}
+	taken, errTaken := strconv.Atoi(m[1])
+	total, errTotal := strconv.Atoi(m[2])
+	if errTaken != nil || errTotal != nil {
+		return 0, 0, false
+	}
+	return taken, total, true
 }
 
 // resolveFilename resolves a filename from coverage data using the sources list.

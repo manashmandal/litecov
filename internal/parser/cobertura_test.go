@@ -760,6 +760,173 @@ func TestCoberturaParser_Parse_SourceProjectPathDoesNotInventDirectories(t *test
 	}
 }
 
+func TestCoberturaParser_Parse_ConditionCoverageBranches(t *testing.T) {
+	// Mirrors issue #25: coberturaLine only decoded number and hits, so a
+	// line whose branches were partially taken read the same as a fully
+	// covered one. Codecov's Cobertura processor treats a branch="true"
+	// line with a condition-coverage ratio as branch coverage, not a hit
+	// count (services/report/languages/cobertura.py) -- a line is only as
+	// covered as that ratio, the same way lineHit already demotes an LCOV
+	// BRDA: line with an untaken branch (issue #63).
+	tests := []struct {
+		name        string
+		xml         string
+		wantTotal   int
+		wantCovered int
+		wantUncov   []int
+	}{
+		{
+			name: "one of two branches taken demotes a hit line to uncovered",
+			xml: `<?xml version="1.0"?>
+<coverage><packages><package name="mypkg"><classes>
+<class name="calc.py" filename="mypkg/calc.py"><lines>
+<line number="6" hits="1" branch="true" condition-coverage="50% (1/2)"/>
+</lines></class>
+</classes></package></packages></coverage>`,
+			wantTotal:   1,
+			wantCovered: 0,
+			wantUncov:   []int{6},
+		},
+		{
+			name: "zero of two branches taken is already uncovered via hits",
+			xml: `<?xml version="1.0"?>
+<coverage><packages><package name="mypkg"><classes>
+<class name="calc.py" filename="mypkg/calc.py"><lines>
+<line number="13" hits="0" branch="true" condition-coverage="0% (0/2)"/>
+</lines></class>
+</classes></package></packages></coverage>`,
+			wantTotal:   1,
+			wantCovered: 0,
+			wantUncov:   []int{13},
+		},
+		{
+			name: "all branches taken still counts as a clean hit",
+			xml: `<?xml version="1.0"?>
+<coverage><packages><package name="mypkg"><classes>
+<class name="calc.py" filename="mypkg/calc.py"><lines>
+<line number="9" hits="3" branch="true" condition-coverage="100% (2/2)"/>
+</lines></class>
+</classes></package></packages></coverage>`,
+			wantTotal:   1,
+			wantCovered: 1,
+			wantUncov:   nil,
+		},
+		{
+			name: "branch false ignores condition-coverage and uses hits",
+			xml: `<?xml version="1.0"?>
+<coverage><packages><package name="mypkg"><classes>
+<class name="calc.py" filename="mypkg/calc.py"><lines>
+<line number="1" hits="1" branch="false" condition-coverage="50% (1/2)"/>
+</lines></class>
+</classes></package></packages></coverage>`,
+			wantTotal:   1,
+			wantCovered: 1,
+			wantUncov:   nil,
+		},
+		{
+			name: "branch true with malformed condition-coverage falls back to hits",
+			xml: `<?xml version="1.0"?>
+<coverage><packages><package name="mypkg"><classes>
+<class name="calc.py" filename="mypkg/calc.py"><lines>
+<line number="1" hits="1" branch="true" condition-coverage="n/a"/>
+</lines></class>
+</classes></package></packages></coverage>`,
+			wantTotal:   1,
+			wantCovered: 1,
+			wantUncov:   nil,
+		},
+		{
+			name: "branch attribute is case-insensitive like Codecov's own check",
+			xml: `<?xml version="1.0"?>
+<coverage><packages><package name="mypkg"><classes>
+<class name="calc.py" filename="mypkg/calc.py"><lines>
+<line number="6" hits="1" branch="True" condition-coverage="50% (1/2)"/>
+</lines></class>
+</classes></package></packages></coverage>`,
+			wantTotal:   1,
+			wantCovered: 0,
+			wantUncov:   []int{6},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := &CoberturaParser{}
+			report, err := p.Parse(strings.NewReader(tt.xml))
+			if err != nil {
+				t.Fatalf("Parse() error = %v", err)
+			}
+			if len(report.Files) != 1 {
+				t.Fatalf("got %d files, want 1", len(report.Files))
+			}
+			fc := report.Files[0]
+			if fc.LinesTotal != tt.wantTotal {
+				t.Errorf("LinesTotal = %v, want %v", fc.LinesTotal, tt.wantTotal)
+			}
+			if fc.LinesCovered != tt.wantCovered {
+				t.Errorf("LinesCovered = %v, want %v", fc.LinesCovered, tt.wantCovered)
+			}
+			if len(fc.UncoveredLines) != len(tt.wantUncov) {
+				t.Errorf("UncoveredLines = %v, want %v", fc.UncoveredLines, tt.wantUncov)
+			}
+		})
+	}
+}
+
+func TestCoberturaParser_Parse_ConditionCoveragePartialRepro(t *testing.T) {
+	// The exact repro from issue #25: coverage.py 7.10.7 output for a module
+	// with one taken and one untaken branch on line 6, and a fully missed
+	// branch on line 13. Before the fix this reported 6/11 (54.55%) with
+	// line 6 counted as a full hit even though only one of its two branches
+	// ran; the 1-of-4 branch coverage on the input showed up nowhere.
+	xml := `<?xml version="1.0"?>
+<coverage version="7.10.7" lines-valid="11" lines-covered="6" line-rate="0.5455"
+          branches-valid="4" branches-covered="1" branch-rate="0.25">
+  <packages><package name="mypkg"><classes>
+    <class name="calc.py" filename="mypkg/calc.py"><lines>
+      <line number="1" hits="1"/>
+      <line number="2" hits="1"/>
+      <line number="3" hits="1"/>
+      <line number="4" hits="1"/>
+      <line number="5" hits="1"/>
+      <line number="6" hits="1" branch="true" condition-coverage="50% (1/2)" missing-branches="7"/>
+      <line number="7" hits="0"/>
+      <line number="12" hits="0"/>
+      <line number="13" hits="0" branch="true" condition-coverage="0% (0/2)" missing-branches="14,15"/>
+      <line number="14" hits="0"/>
+      <line number="15" hits="0"/>
+    </lines></class>
+  </classes></package></packages></coverage>`
+	p := &CoberturaParser{}
+	report, err := p.Parse(strings.NewReader(xml))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if len(report.Files) != 1 {
+		t.Fatalf("got %d files, want 1", len(report.Files))
+	}
+	fc := report.Files[0]
+	if fc.LinesTotal != 11 {
+		t.Errorf("LinesTotal = %v, want 11", fc.LinesTotal)
+	}
+	if fc.LinesCovered != 5 {
+		t.Errorf("LinesCovered = %v, want 5 (line 6 no longer counts as a full hit)", fc.LinesCovered)
+	}
+	wantUncovered := []int{6, 7, 12, 13, 14, 15}
+	if len(fc.UncoveredLines) != len(wantUncovered) {
+		t.Fatalf("UncoveredLines = %v, want %v", fc.UncoveredLines, wantUncovered)
+	}
+	for i, n := range wantUncovered {
+		if fc.UncoveredLines[i] != n {
+			t.Errorf("UncoveredLines = %v, want %v", fc.UncoveredLines, wantUncovered)
+			break
+		}
+	}
+	if report.TotalCovered != 5 || report.TotalLines != 11 {
+		t.Errorf("TotalCovered/TotalLines = %v/%v, want 5/11", report.TotalCovered, report.TotalLines)
+	}
+}
+
 func TestCoberturaParser_Parse_UncoveredLines(t *testing.T) {
 	xml := `<?xml version="1.0"?>
 <coverage>
