@@ -4,6 +4,7 @@ import (
 	"encoding/xml"
 	"io"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/manashmandal/litecov/internal/coverage"
@@ -28,9 +29,15 @@ type coberturaClass struct {
 	Lines    []coberturaLine `xml:"lines>line"`
 }
 
+// Number and Hits are decoded as strings, not int: the Cobertura DTD types
+// both as CDATA, and encoding/xml aborts the entire Decode call the moment
+// one <line> anywhere in the report fails to parse as Go's int (see issue
+// #57). Producers in the wild emit "1.0", "undefined" or an out-of-range
+// value for either attribute, so they're parsed defensively in Parse below
+// instead of trusted to the struct tag.
 type coberturaLine struct {
-	Number int `xml:"number,attr"`
-	Hits   int `xml:"hits,attr"`
+	Number string `xml:"number,attr"`
+	Hits   string `xml:"hits,attr"`
 }
 
 func (p *CoberturaParser) Parse(r io.Reader) (*coverage.Report, error) {
@@ -54,16 +61,20 @@ func (p *CoberturaParser) Parse(r io.Reader) (*coverage.Report, error) {
 				linesSeen[filename] = make(map[int]bool)
 			}
 			for _, line := range class.Lines {
-				// Skip duplicate lines (same line number seen in multiple classes)
-				if linesSeen[filename][line.Number] {
+				lineNum, ok := parseCoberturaLineNumber(line.Number)
+				if !ok {
 					continue
 				}
-				linesSeen[filename][line.Number] = true
+				// Skip duplicate lines (same line number seen in multiple classes)
+				if linesSeen[filename][lineNum] {
+					continue
+				}
+				linesSeen[filename][lineNum] = true
 				fc.LinesTotal++
-				if line.Hits > 0 {
+				if parseCoberturaHits(line.Hits) {
 					fc.LinesCovered++
 				} else {
-					fc.UncoveredLines = append(fc.UncoveredLines, line.Number)
+					fc.UncoveredLines = append(fc.UncoveredLines, lineNum)
 				}
 			}
 		}
@@ -76,6 +87,39 @@ func (p *CoberturaParser) Parse(r io.Reader) (*coverage.Report, error) {
 
 	report.Calculate()
 	return report, nil
+}
+
+// parseCoberturaLineNumber parses a Cobertura <line> number attribute and
+// reports whether it names a real source line. Lines are 1-indexed, so a
+// missing attribute (decodes to ""), a non-numeric value like "undefined"
+// (some coverage merge tools emit this), and a value that parses but isn't
+// greater than 0 are all rejected here. Without this, a missing/invalid
+// number and a genuine number="0" both fall through to the same line 0 and
+// collide in the dedup below, silently dropping one of them.
+func parseCoberturaLineNumber(raw string) (int, bool) {
+	n, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	return n, true
+}
+
+// parseCoberturaHits parses a Cobertura <line> hits attribute and reports
+// whether the line counts as covered. hits is normally a plain integer, so
+// strconv.Atoi is tried first; a value it rejects -- a float like "1.0", or
+// an integer too large to fit an int -- is retried with strconv.ParseFloat,
+// since only the sign matters here. ParseFloat saturates an out-of-range
+// magnitude to +/-Inf rather than erroring, and returns 0 for a value that
+// isn't a number at all (including ""), so its result can be compared
+// against 0 without inspecting the error: an empty or unparseable hits
+// attribute ends up not covered instead of aborting the report.
+func parseCoberturaHits(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if n, err := strconv.Atoi(raw); err == nil {
+		return n > 0
+	}
+	f, _ := strconv.ParseFloat(raw, 64)
+	return f > 0
 }
 
 // resolveFilename resolves a filename from coverage data using the sources list.
