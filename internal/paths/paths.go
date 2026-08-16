@@ -92,7 +92,13 @@ func FindMatchingChangedFile(coveragePath string, changedSet map[string]bool) st
 	return ""
 }
 
-// HasSuffix checks if path ends with suffix (with proper path boundary).
+// HasSuffix checks if path ends with suffix (with proper path boundary),
+// anchored so the remaining prefix looks like something a coverage tool
+// wraps around a repo-relative path (an absolute filesystem path, or a Go
+// module/VCS host like "github.com") rather than an unrelated sibling
+// directory. Without this, a vendored "internal/foo.go" or a "web/src/x.py"
+// would match a changed file that only shares a filename and directory
+// segment, not a real path.
 func HasSuffix(path, suffix string) bool {
 	if len(suffix) > len(path) {
 		return false
@@ -102,9 +108,27 @@ func HasSuffix(path, suffix string) bool {
 	}
 	// Check suffix with path boundary (/)
 	if len(path) > len(suffix) && path[len(path)-len(suffix)-1] == '/' {
-		return path[len(path)-len(suffix):] == suffix
+		if path[len(path)-len(suffix):] != suffix {
+			return false
+		}
+		return isPathWrapperPrefix(path[:len(path)-len(suffix)-1])
 	}
 	return false
+}
+
+// isPathWrapperPrefix reports whether prefix is the kind of thing wrapped
+// around a repo-relative path rather than a genuine sibling directory: an
+// absolute filesystem path (pytest-cov style), or a dotted host segment
+// like "github.com" or "gitlab.com" (Go module style).
+func isPathWrapperPrefix(prefix string) bool {
+	if prefix == "" || strings.HasPrefix(prefix, "/") {
+		return true
+	}
+	first := prefix
+	if idx := strings.IndexByte(prefix, '/'); idx >= 0 {
+		first = prefix[:idx]
+	}
+	return strings.Contains(first, ".")
 }
 
 // NormalizePathForAnnotation converts a Go module or Python package path to a repo-relative path.

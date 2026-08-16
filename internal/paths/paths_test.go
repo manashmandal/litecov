@@ -54,9 +54,9 @@ func TestIsSourceFile(t *testing.T) {
 
 func TestFindMatchingChangedFile(t *testing.T) {
 	changedSet := map[string]bool{
-		"cmd/app/main.go":          true,
-		"internal/foo/handler.go":  true,
-		"src/mypackage/module.py":  true,
+		"cmd/app/main.go":         true,
+		"internal/foo/handler.go": true,
+		"src/mypackage/module.py": true,
 	}
 
 	tests := []struct {
@@ -76,6 +76,9 @@ func TestFindMatchingChangedFile(t *testing.T) {
 		// No match
 		{"internal/other/file.go", ""},
 		{"src/other/module.py", ""},
+		// Issue #13: a vendored file with the same tail must not steal the
+		// match meant for the repo's own internal/foo/handler.go.
+		{"vendor/github.com/other/lib/internal/foo/handler.go", ""},
 	}
 
 	for _, tt := range tests {
@@ -96,12 +99,19 @@ func TestHasSuffix(t *testing.T) {
 		{"cmd/app/main.go", "cmd/app/main.go", true},
 		{"github.com/user/repo/cmd/app/main.go", "cmd/app/main.go", true},
 		{"/home/runner/work/repo/src/module.py", "src/module.py", true},
-		{"cmd/app/main.go", "main.go", true},
 		{"cmd/app/main.go", "other.go", false},
-		{"cmd/app/main.go", "app/main.go", true},
+		// Not anchored to the repo root: "cmd/" and "app/" are ordinary
+		// sibling directories, not a wrapper prefix, so these must not match.
+		{"cmd/app/main.go", "main.go", false},
+		{"cmd/app/main.go", "app/main.go", false},
 		// No boundary check for these
 		{"xmain.go", "main.go", false}, // should fail - no path boundary
 		{"main.go", "xmain.go", false}, // suffix longer than path
+		// Issue #13: unrelated directories must not match just because a
+		// "/" boundary happens to line up.
+		{"vendor/github.com/other/lib/internal/foo.go", "internal/foo.go", false},
+		{"web/src/index.py", "src/index.py", false},
+		{"x/y/a/b.go", "a/b.go", false},
 	}
 
 	for _, tt := range tests {
