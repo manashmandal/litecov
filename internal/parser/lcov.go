@@ -2,6 +2,7 @@ package parser
 
 import (
 	"bufio"
+	"errors"
 	"io"
 	"path/filepath"
 	"sort"
@@ -15,6 +16,19 @@ type LCOVParser struct {
 	// SourcePrefix is prepended to file paths if set
 	SourcePrefix string
 }
+
+// ErrNoCoverageData is returned when a parse produces no file with any line
+// data: content that isn't LCOV at all (a Go coverage.out, Cobertura XML, an
+// empty file, or plain text that DetectFormat's "SF:" heuristic misclassifies
+// as LCOV) or an LCOV tracefile whose only SF: records are empty. Codecov
+// treats this as a processing error rather than a real result --
+// services/report/__init__.py catches ReportEmptyError and records
+// UploadErrorCode.REPORT_EMPTY instead of letting the coverage number fall
+// to zero -- so the caller should reject the report instead of publishing it
+// as 0% coverage. A tracefile that legitimately covers zero lines still
+// produces file entries with LinesTotal > 0 (see the end_of_record and
+// trailing-record handling below), so it stays distinguishable from this.
+var ErrNoCoverageData = errors.New("no coverage data found: input contains no valid LCOV records")
 
 func (p *LCOVParser) Parse(r io.Reader) (*coverage.Report, error) {
 	report := &coverage.Report{}
@@ -142,6 +156,14 @@ func (p *LCOVParser) Parse(r io.Reader) (*coverage.Report, error) {
 	}
 
 	report.Calculate()
+
+	// See ErrNoCoverageData's doc comment: a parse that ends with no files at
+	// all means the input was never a real LCOV tracefile, not that it's a
+	// genuine 0% report.
+	if len(report.Files) == 0 {
+		return nil, ErrNoCoverageData
+	}
+
 	return report, nil
 }
 

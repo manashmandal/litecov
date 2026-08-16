@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -49,13 +50,49 @@ func TestLCOVParser_Parse(t *testing.T) {
 }
 
 func TestLCOVParser_Parse_Empty(t *testing.T) {
+	// Mirrors the repro in issue #68: an empty tracefile has no coverage
+	// data at all, so it must fail with ErrNoCoverageData rather than
+	// come back as a silent 0% report.
 	p := &LCOVParser{}
 	report, err := p.Parse(strings.NewReader(""))
-	if err != nil {
-		t.Fatalf("Parse() error = %v", err)
+	if !errors.Is(err, ErrNoCoverageData) {
+		t.Fatalf("Parse() error = %v, want ErrNoCoverageData", err)
 	}
-	if len(report.Files) != 0 {
-		t.Errorf("got %d files, want 0", len(report.Files))
+	if report != nil {
+		t.Errorf("got report = %v, want nil", report)
+	}
+}
+
+func TestLCOVParser_Parse_NotLCOV(t *testing.T) {
+	// Mirrors the repro in issue #68: content that isn't LCOV at all (a Go
+	// coverage.out profile here) has no SF:/DA: records to match, so every
+	// line falls through the switch and the parse must fail instead of
+	// reporting 0/0 lines as 0% coverage.
+	goCoverage := "mode: set\ngithub.com/manashmandal/litecov/internal/parser/lcov.go:19.36,20.24 1 1\n"
+	p := &LCOVParser{}
+	report, err := p.Parse(strings.NewReader(goCoverage))
+	if !errors.Is(err, ErrNoCoverageData) {
+		t.Fatalf("Parse() error = %v, want ErrNoCoverageData", err)
+	}
+	if report != nil {
+		t.Errorf("got report = %v, want nil", report)
+	}
+}
+
+func TestLCOVParser_Parse_PlainTextWithSFSubstring(t *testing.T) {
+	// Mirrors the last repro in issue #68: DetectFormat classifies any
+	// content containing the substring "SF:" as LCOV, so plain text that
+	// merely mentions it (but has no line that starts with "SF:") can reach
+	// LCOVParser with zero real records. It must fail the same way as any
+	// other non-LCOV input.
+	text := "Coverage summary: see SF:/build/report for the raw log.\n"
+	p := &LCOVParser{}
+	report, err := p.Parse(strings.NewReader(text))
+	if !errors.Is(err, ErrNoCoverageData) {
+		t.Fatalf("Parse() error = %v, want ErrNoCoverageData", err)
+	}
+	if report != nil {
+		t.Errorf("got report = %v, want nil", report)
 	}
 }
 
@@ -593,14 +630,39 @@ end_of_record`
 func TestLCOVParser_Parse_EmptyTrailingRecordSkipped(t *testing.T) {
 	// Same as TestLCOVParser_Parse_EmptyRecordSkipped but for the trailing
 	// record with no closing end_of_record, which is flushed by the
-	// separate code path after the scan loop.
-	lcov := `SF:/src/empty.js`
+	// separate code path after the scan loop. A real record precedes it so
+	// the report still has coverage data overall -- see
+	// TestLCOVParser_Parse_OnlyEmptyTrailingRecord for the case where the
+	// empty trailing record is the only thing in the file.
+	lcov := `SF:/src/a.js
+DA:1,1
+end_of_record
+SF:/src/empty.js`
 	p := &LCOVParser{}
 	report, err := p.Parse(strings.NewReader(lcov))
 	if err != nil {
 		t.Fatalf("Parse() error = %v", err)
 	}
-	if len(report.Files) != 0 {
-		t.Errorf("got %d files, want 0 (empty trailing record must be dropped)", len(report.Files))
+	if len(report.Files) != 1 {
+		t.Fatalf("got %d files, want 1 (empty trailing record must be dropped)", len(report.Files))
+	}
+	if report.Files[0].Path != "/src/a.js" {
+		t.Errorf("Files[0].Path = %v, want /src/a.js", report.Files[0].Path)
+	}
+}
+
+func TestLCOVParser_Parse_OnlyEmptyTrailingRecord(t *testing.T) {
+	// A lone SF: record with no DA: data and nothing else -- flushed by the
+	// trailing-record path since there's no end_of_record -- leaves zero
+	// files in the report, same as TestLCOVParser_Parse_Empty, and must
+	// fail with ErrNoCoverageData rather than succeed with an empty report.
+	lcov := `SF:/src/empty.js`
+	p := &LCOVParser{}
+	report, err := p.Parse(strings.NewReader(lcov))
+	if !errors.Is(err, ErrNoCoverageData) {
+		t.Fatalf("Parse() error = %v, want ErrNoCoverageData", err)
+	}
+	if report != nil {
+		t.Errorf("got report = %v, want nil", report)
 	}
 }
