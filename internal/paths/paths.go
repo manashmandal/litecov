@@ -10,7 +10,11 @@ import (
 )
 
 // IsSourceFile checks if a file is a source file that should have coverage.
-// Supports Go and Python files, excludes test files, vendor directories, and generated files.
+// Recognizes every language the README advertises across LCOV and Cobertura
+// XML input: Go, Python, JavaScript/TypeScript, Rust, C/C++, Ruby,
+// Java/Kotlin, C#, and Swift. Go and Python additionally exclude their own
+// test files, vendor directories, and generated files; the other languages
+// are recognized by extension only.
 func IsSourceFile(path string) bool {
 	// Go files
 	if strings.HasSuffix(path, ".go") {
@@ -20,6 +24,45 @@ func IsSourceFile(path string) bool {
 	// Python files
 	if strings.HasSuffix(path, ".py") {
 		return isPythonSourceFile(path)
+	}
+
+	// JavaScript/TypeScript files (Jest, Vitest, c8, nyc)
+	if strings.HasSuffix(path, ".js") || strings.HasSuffix(path, ".jsx") ||
+		strings.HasSuffix(path, ".mjs") || strings.HasSuffix(path, ".cjs") ||
+		strings.HasSuffix(path, ".ts") || strings.HasSuffix(path, ".tsx") {
+		return true
+	}
+
+	// Rust files (grcov, tarpaulin)
+	if strings.HasSuffix(path, ".rs") {
+		return true
+	}
+
+	// C/C++ files (gcov, llvm-cov)
+	if strings.HasSuffix(path, ".c") || strings.HasSuffix(path, ".cc") ||
+		strings.HasSuffix(path, ".cpp") || strings.HasSuffix(path, ".h") ||
+		strings.HasSuffix(path, ".hpp") {
+		return true
+	}
+
+	// Ruby files (SimpleCov)
+	if strings.HasSuffix(path, ".rb") {
+		return true
+	}
+
+	// Java/Kotlin files (Cobertura, JaCoCo)
+	if strings.HasSuffix(path, ".java") || strings.HasSuffix(path, ".kt") {
+		return true
+	}
+
+	// C# files (Coverlet)
+	if strings.HasSuffix(path, ".cs") {
+		return true
+	}
+
+	// Swift files (llvm-cov via XCTest)
+	if strings.HasSuffix(path, ".swift") {
+		return true
 	}
 
 	return false

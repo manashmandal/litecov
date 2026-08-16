@@ -41,6 +41,34 @@ func TestIsSourceFile(t *testing.T) {
 		{".github/workflows/ci.yml", false},
 		{"README.md", false},
 		{"package.json", false},
+
+		// Issue #15: IsSourceFile used to recognize only Go and Python,
+		// silently skipping "no coverage" reporting for every other
+		// language the README advertises. These are the exact paths from
+		// the issue's repro.
+		{"src/index.js", true},
+		{"src/index.ts", true},
+		{"src/App.tsx", true},
+		{"src/main.rs", true},
+		{"src/engine.cpp", true},
+		{"src/engine.c", true},
+		{"app/models/user.rb", true},
+		{"src/main/Foo.java", true},
+		{"src/Service.cs", true},
+		{"src/Main.kt", true},
+
+		// JavaScript/TypeScript - remaining extensions
+		{"src/App.jsx", true},
+		{"src/module.mjs", true},
+		{"src/module.cjs", true},
+
+		// C/C++ - remaining extensions
+		{"src/engine.cc", true},
+		{"include/engine.h", true},
+		{"include/engine.hpp", true},
+
+		// Swift files
+		{"Sources/App/ContentView.swift", true},
 	}
 
 	for _, tt := range tests {
