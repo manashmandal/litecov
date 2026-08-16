@@ -462,3 +462,75 @@ end_of_record`
 		t.Fatalf("got %d files, want 1", len(report.Files))
 	}
 }
+
+func TestLCOVParser_Parse_ScientificNotationHits(t *testing.T) {
+	// Mirrors the first repro in issue #66: some gcov and JS toolchains
+	// write very high execution counts in scientific notation, which
+	// strconv.Atoi rejects. Discarding that error used to default the
+	// count to 0 and record line 1 as a miss even though it ran a
+	// million times.
+	lcov := `SF:/src/a.js
+DA:1,1e+06
+DA:2,1
+end_of_record`
+	p := &LCOVParser{}
+	report, err := p.Parse(strings.NewReader(lcov))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	f := report.Files[0]
+	if f.LinesCovered != 2 {
+		t.Errorf("LinesCovered = %v, want 2 (line 1's 1e+06 hits must count as covered)", f.LinesCovered)
+	}
+	if f.LinesTotal != 2 {
+		t.Errorf("LinesTotal = %v, want 2", f.LinesTotal)
+	}
+	if len(f.UncoveredLines) != 0 {
+		t.Errorf("UncoveredLines = %v, want none", f.UncoveredLines)
+	}
+}
+
+func TestLCOVParser_Parse_WhitespaceInHits(t *testing.T) {
+	// Mirrors the second repro in issue #66: whitespace after the comma,
+	// which a tracefile assembled by hand or by a shell script can carry,
+	// also makes strconv.Atoi fail and must not be counted as a miss.
+	lcov := `SF:/src/a.js
+DA:1, 5
+DA:2,1
+end_of_record`
+	p := &LCOVParser{}
+	report, err := p.Parse(strings.NewReader(lcov))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	f := report.Files[0]
+	if f.LinesCovered != 2 {
+		t.Errorf("LinesCovered = %v, want 2 (line 1's ' 5' hits must count as covered)", f.LinesCovered)
+	}
+	if f.LinesTotal != 2 {
+		t.Errorf("LinesTotal = %v, want 2", f.LinesTotal)
+	}
+}
+
+func TestLCOVParser_Parse_UnparseableHitsSkipped(t *testing.T) {
+	// A hits field that isn't a number at all has nothing to fall back to,
+	// unlike the two repros above, and must be dropped the same way an
+	// unparseable DA: line number already is, instead of being counted as
+	// a miss.
+	lcov := `SF:/src/a.js
+DA:1,abc
+DA:2,1
+end_of_record`
+	p := &LCOVParser{}
+	report, err := p.Parse(strings.NewReader(lcov))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	f := report.Files[0]
+	if f.LinesTotal != 1 {
+		t.Errorf("LinesTotal = %v, want 1 (DA:1,abc must be skipped, not counted as a miss)", f.LinesTotal)
+	}
+	if f.LinesCovered != 1 {
+		t.Errorf("LinesCovered = %v, want 1", f.LinesCovered)
+	}
+}

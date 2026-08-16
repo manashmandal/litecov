@@ -77,7 +77,16 @@ func (p *LCOVParser) Parse(r io.Reader) (*coverage.Report, error) {
 				if err != nil || lineNum < 1 {
 					continue
 				}
-				hits, _ := strconv.Atoi(parts[1])
+				hit, ok := parseExecutionCount(parts[1])
+				// strconv.Atoi rejects scientific notation (some gcov and JS
+				// toolchains emit "1e+06" for very high counts) and whitespace
+				// around the value (tracefiles assembled by concatenating
+				// shards can carry it). Discarding that error, as this used to,
+				// defaulted the count to 0 and recorded a line that actually ran
+				// as a miss. Skip the record instead when it still can't parse.
+				if !ok {
+					continue
+				}
 				// A line can appear in more than one DA: record within the
 				// same SF:/end_of_record block, e.g. a tracefile produced
 				// by concatenating per-suite runs before upload. OR the hit
@@ -86,7 +95,7 @@ func (p *LCOVParser) Parse(r io.Reader) (*coverage.Report, error) {
 				// of treating every DA: as a distinct line. LinesTotal,
 				// LinesCovered and UncoveredLines are derived from this map
 				// at end_of_record so a repeated line is counted once.
-				currentLines[lineNum] = currentLines[lineNum] || hits > 0
+				currentLines[lineNum] = currentLines[lineNum] || hit
 			}
 
 		// LF: and LH: are lcov's own summary of the DA: records in this
@@ -121,6 +130,28 @@ func (p *LCOVParser) Parse(r io.Reader) (*coverage.Report, error) {
 
 	report.Calculate()
 	return report, nil
+}
+
+// parseExecutionCount parses the hit count field of a DA: record and
+// reports whether it denotes a line that ran at least once. The field is
+// normally a plain integer, but some gcov and JS toolchains emit
+// scientific notation (e.g. "1e+06") for very high counts, and a
+// tracefile assembled by concatenating shards can leave whitespace
+// around the value, so raw is trimmed and, when strconv.Atoi rejects it,
+// retried with strconv.ParseFloat. Only the sign of the count matters to
+// the caller, so float64's precision loss on enormous values isn't a
+// concern. ok is false only when neither parse succeeds, so the caller
+// can skip the record rather than guess at whether the line ran.
+func parseExecutionCount(raw string) (hit bool, ok bool) {
+	raw = strings.TrimSpace(raw)
+	if n, err := strconv.Atoi(raw); err == nil {
+		return n > 0, true
+	}
+	f, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return false, false
+	}
+	return f > 0, true
 }
 
 // finalizeRecord derives rec's LinesTotal, LinesCovered and UncoveredLines
