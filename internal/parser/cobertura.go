@@ -280,39 +280,47 @@ func trimSourceDir(filename, source string) (rel string, ok bool) {
 	return filename[len(source)+1:], true
 }
 
-// extractProjectPath attempts to extract a project-relative path from a source directory.
-// e.g., "/home/runner/work/myrepo/myrepo/src" might return "src"
-// e.g., "/home/runner/work/myrepo/myrepo/python" might return "python"
+// extractProjectPath attempts to extract a project-relative path from a
+// source directory by recognizing the GitHub Actions workspace layout.
+// $GITHUB_WORKSPACE checks a repo out at /home/runner/work/{repo}/{repo},
+// so a source under that root has the repo name repeated with "work"
+// immediately before the pair; everything after the second occurrence is
+// repo-relative.
+// e.g., "/home/runner/work/myrepo/myrepo/src" returns "src"
+// e.g., "/home/runner/work/myrepo/myrepo/python" returns "python"
+//
+// This used to also match a "/src/", "/lib/", "/app/" etc. substring
+// anywhere in source, and treat a source ending in a basename like "app"
+// or "tests" as that basename's own project root. Both are guesses that
+// can name a directory the repo doesn't have -- a Docker WORKDIR of "/app"
+// isn't a subdirectory of the repo called "app", and a Jenkins workspace
+// ending in ".../build/tests" isn't a "tests" subdirectory of it either --
+// and resolveFilename prepends whatever this returns to every filename
+// under that source, so a wrong guess invents a path GitHub can't resolve
+// to a blob. Recognizing only the literal GHA layout, a real convention
+// rather than a guess, removes that failure mode. It's also why the loop
+// below requires "work" immediately before the repeated pair instead of
+// matching any repeated segment: an unrelated repeat earlier in the path,
+// e.g. /home/ci/ci/build/myrepo, is not a GHA workspace and used to be
+// misread as one, prepending "build/myrepo" to every filename in the
+// report. See issue #40.
+//
+// A source this can't read anything from returns "", which
+// resolveAgreedProjectPath treats as no opinion rather than a guess, so
+// resolution falls back to the bare filename -- still rescuable later by
+// the suffix matcher in internal/paths, unlike a wrong invented prefix.
 func extractProjectPath(source string) string {
-	// GitHub Actions workspace pattern: /home/runner/work/{repo}/{repo}/...
-	// The path after the repeated repo name is relative to repo root
 	parts := strings.Split(source, "/")
-	for i := 0; i < len(parts)-1; i++ {
-		// Look for repeated directory name (repo name appears twice in GHA)
-		if parts[i] != "" && parts[i] == parts[i+1] {
-			// Everything after the second occurrence is repo-relative
+	for i := 1; i < len(parts)-1; i++ {
+		// Repo name appears twice in the GHA workspace path, immediately
+		// after "work".
+		if parts[i] != "" && parts[i] == parts[i+1] && parts[i-1] == "work" {
+			// Everything after the second occurrence is repo-relative.
 			if i+2 < len(parts) {
 				return strings.Join(parts[i+2:], "/")
 			}
+			return ""
 		}
 	}
-
-	// Common Python project markers
-	markers := []string{"/src/", "/lib/", "/app/", "/tests/", "/test/", "/python/"}
-	for _, marker := range markers {
-		if idx := strings.LastIndex(source, marker); idx >= 0 {
-			return source[idx+1:] // Return everything after the slash before marker
-		}
-	}
-
-	// Check if source ends with a known directory
-	base := filepath.Base(source)
-	knownDirs := []string{"src", "lib", "app", "tests", "test", "python", "py"}
-	for _, dir := range knownDirs {
-		if base == dir {
-			return base
-		}
-	}
-
 	return ""
 }

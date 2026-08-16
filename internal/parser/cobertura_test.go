@@ -673,6 +673,70 @@ func TestCoberturaParser_Parse_MultipleSourcesRepro(t *testing.T) {
 	}
 }
 
+func TestCoberturaParser_Parse_SourceProjectPathDoesNotInventDirectories(t *testing.T) {
+	// Mirrors the repro table in issue #40: extractProjectPath used to guess
+	// a repo-relative prefix for a source directory from a list of
+	// substring markers, a list of known directory basenames, and a
+	// repeated-path-segment scan that fired on any repeated segment
+	// anywhere in the source instead of only the GitHub Actions
+	// work/{repo}/{repo} pair it was written for. Each source below is a
+	// real value one of those three guesses got wrong.
+	tests := []struct {
+		name     string
+		source   string
+		filename string
+	}{
+		{
+			// Docker WORKDIR /app, repo mounted at the root. The knownDirs
+			// check matched the "app" basename and prepended it, producing
+			// "app/mypkg/calc.py" -- a path that doesn't exist in the repo.
+			name:     "Docker WORKDIR basename is not a repo subdirectory",
+			source:   "/app",
+			filename: "mypkg/calc.py",
+		},
+		{
+			// Same knownDirs bug from the other direction: the workspace
+			// happens to end in "tests", which used to be read as a
+			// project root literally named "tests".
+			name:     "CI workspace ending in a known basename",
+			source:   "/home/jenkins/agent/workspace/build/tests",
+			filename: "pkg/a.py",
+		},
+		{
+			// "ci/ci" is a repeated segment, but nothing here is the GitHub
+			// Actions work/{repo}/{repo} checkout root; the old repeated-
+			// segment scan didn't check what preceded the pair and returned
+			// "build/myrepo" anyway.
+			name:     "repeated segment not preceded by work is not a GHA workspace",
+			source:   "/home/ci/ci/build/myrepo",
+			filename: "pkg/a.py",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			xmlDoc := `<?xml version="1.0"?>
+<coverage><sources><source>` + tt.source + `</source></sources><packages><package name="p"><classes>
+<class name="A" filename="` + tt.filename + `"><lines><line number="1" hits="1"/></lines></class>
+</classes></package></packages></coverage>`
+
+			p := &CoberturaParser{}
+			report, err := p.Parse(strings.NewReader(xmlDoc))
+			if err != nil {
+				t.Fatalf("Parse() error = %v", err)
+			}
+			if len(report.Files) != 1 {
+				t.Fatalf("got %d files, want 1", len(report.Files))
+			}
+			// None of these sources resolve to a real prefix, so the
+			// correct repo-relative path is the filename unchanged.
+			if report.Files[0].Path != tt.filename {
+				t.Errorf("Path = %q, want %q (source must not invent a directory prefix)", report.Files[0].Path, tt.filename)
+			}
+		})
+	}
+}
+
 func TestCoberturaParser_Parse_UncoveredLines(t *testing.T) {
 	xml := `<?xml version="1.0"?>
 <coverage>
