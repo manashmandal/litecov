@@ -132,7 +132,15 @@ func main() {
 	if *showFiles == "changed" && prNumber > 0 {
 		changedFiles, err = gh.GetChangedFiles(prNumber)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: Failed to get changed files: %v\n", err)
+			// A missing pull-requests: read permission, a rate limit, or a
+			// fork PR with a restricted token all land here. Continuing with
+			// a nil slice used to make the "changed" filter fall back to
+			// every file in the report, which posts a comment that looks
+			// like a normal, correctly-scoped run (issue #20). Fail instead
+			// of posting a report whose scope silently doesn't match what
+			// show-files: changed promises.
+			fmt.Fprintf(os.Stderr, "Failed to get changed files: %v\n", err)
+			os.Exit(1)
 		}
 		// GitHub's changed-file paths are already clean, but normalize them
 		// too so both sides of every later comparison went through the

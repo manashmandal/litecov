@@ -97,7 +97,10 @@ func TestFormat_FilterChanged(t *testing.T) {
 	}
 }
 
-func TestFormat_ChangedNoFilter(t *testing.T) {
+func TestFormat_ChangedEmptyDoesNotFallBackToAll(t *testing.T) {
+	// Issue #20: an empty ChangedFiles used to make filterFiles fall back to
+	// every file in the report, so show-files: changed silently reported the
+	// whole repo instead of an empty, honestly-scoped result.
 	report := &coverage.Report{
 		Files: []coverage.FileCoverage{
 			{Path: "src/a.go", LinesCovered: 50, LinesTotal: 100},
@@ -107,8 +110,14 @@ func TestFormat_ChangedNoFilter(t *testing.T) {
 	opts := Options{ShowFiles: "changed", ChangedFiles: nil}
 	result := Format(report, opts)
 
-	if !strings.Contains(result, "src/a.go") {
-		t.Error("should show all files when ChangedFiles is empty")
+	if strings.Contains(result, "src/a.go") {
+		t.Error("should not fall back to showing every file when ChangedFiles is empty")
+	}
+	if !strings.Contains(result, "Impacted Files (0)") {
+		t.Error("missing empty Impacted Files section")
+	}
+	if !strings.Contains(result, "No changed files matched the coverage report.") {
+		t.Error("missing explanation that no changed files matched")
 	}
 }
 
@@ -682,6 +691,19 @@ func TestFormatImpactedFiles_Empty(t *testing.T) {
 	result := formatImpactedFiles(nil, Options{})
 	if result != "" {
 		t.Error("expected empty string for no files")
+	}
+}
+
+func TestFormatImpactedFiles_EmptyChanged(t *testing.T) {
+	// Issue #20: show-files: changed with no matching files must render an
+	// explanation, not an empty string indistinguishable from "all: none".
+	result := formatImpactedFiles(nil, Options{ShowFiles: "changed"})
+
+	if !strings.Contains(result, "Impacted Files (0)") {
+		t.Error("missing empty Impacted Files section")
+	}
+	if !strings.Contains(result, "No changed files matched the coverage report.") {
+		t.Error("missing explanation that no changed files matched")
 	}
 }
 

@@ -244,6 +244,9 @@ func formatCoverageDiffWithComparison(comp *coverage.Comparison, opts Options) s
 
 func formatImpactedFiles(files []coverage.FileCoverage, opts Options) string {
 	if len(files) == 0 {
+		if opts.ShowFiles == "changed" {
+			return formatNoChangedFiles()
+		}
 		return ""
 	}
 
@@ -270,6 +273,22 @@ func formatImpactedFiles(files []coverage.FileCoverage, opts Options) string {
 	}
 
 	sb.WriteString("\n</details>\n\n")
+
+	return sb.String()
+}
+
+// formatNoChangedFiles renders the Impacted Files section for show-files:
+// changed when the PR's changed files were determined successfully but none
+// of them matched the coverage report. Rendering an explanatory section
+// beats both a silently blank one and, per issue #20, silently substituting
+// every file in the report.
+func formatNoChangedFiles() string {
+	var sb strings.Builder
+
+	sb.WriteString("<details>\n")
+	sb.WriteString("<summary>Impacted Files (0)</summary>\n\n")
+	sb.WriteString("No changed files matched the coverage report.\n\n")
+	sb.WriteString("</details>\n\n")
 
 	return sb.String()
 }
@@ -405,9 +424,12 @@ func filterFiles(files []coverage.FileCoverage, opts Options) []coverage.FileCov
 		return files
 
 	case opts.ShowFiles == "changed":
-		if len(opts.ChangedFiles) == 0 {
-			return files
-		}
+		// No fallback to the full file list when ChangedFiles is empty: by
+		// the time Format reaches this point, main.go has already exited if
+		// the changed-files fetch itself failed, so an empty list here only
+		// ever means the PR touched nothing the coverage report knows
+		// about. Substituting every file would silently widen what the
+		// report claims to cover (issue #20).
 		changedSet := make(map[string]bool)
 		for _, f := range opts.ChangedFiles {
 			changedSet[f] = true
