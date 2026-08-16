@@ -311,6 +311,87 @@ end_of_record`
 	}
 }
 
+func TestLCOVParser_Parse_DuplicateDA(t *testing.T) {
+	// Mirrors the repro in issue #59: line 5 is hit by one DA: record and
+	// missed by another in the same SF:/end_of_record block. A hit beats a
+	// miss, so line 5 must count as covered and the block has two lines
+	// total, not three.
+	lcov := `SF:/src/a.js
+DA:5,1
+DA:5,0
+DA:6,1
+end_of_record`
+	p := &LCOVParser{}
+	report, err := p.Parse(strings.NewReader(lcov))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if len(report.Files) != 1 {
+		t.Fatalf("got %d files, want 1", len(report.Files))
+	}
+	f := report.Files[0]
+	if f.LinesTotal != 2 {
+		t.Errorf("LinesTotal = %v, want 2 (line 5 must not be counted twice)", f.LinesTotal)
+	}
+	if f.LinesCovered != 2 {
+		t.Errorf("LinesCovered = %v, want 2 (line 5 was hit by one of its records)", f.LinesCovered)
+	}
+	if len(f.UncoveredLines) != 0 {
+		t.Errorf("UncoveredLines = %v, want none", f.UncoveredLines)
+	}
+}
+
+func TestLCOVParser_Parse_DuplicateDAReverseOrder(t *testing.T) {
+	// Same as TestLCOVParser_Parse_DuplicateDA but with the miss recorded
+	// before the hit, per the issue's second repro. Order must not matter.
+	lcov := `SF:/src/a.js
+DA:5,0
+DA:5,1
+end_of_record`
+	p := &LCOVParser{}
+	report, err := p.Parse(strings.NewReader(lcov))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	f := report.Files[0]
+	if f.LinesTotal != 1 {
+		t.Errorf("LinesTotal = %v, want 1", f.LinesTotal)
+	}
+	if f.LinesCovered != 1 {
+		t.Errorf("LinesCovered = %v, want 1", f.LinesCovered)
+	}
+	if len(f.UncoveredLines) != 0 {
+		t.Errorf("UncoveredLines = %v, want none", f.UncoveredLines)
+	}
+}
+
+func TestLCOVParser_Parse_DuplicateDAUncoveredNotDuplicated(t *testing.T) {
+	// A line missed by every DA: record that names it must appear in
+	// UncoveredLines exactly once, not once per record. The issue notes
+	// this duplication was leaking into comment.GroupConsecutiveLines as
+	// two overlapping ::warning annotations for the same line.
+	lcov := `SF:/src/a.js
+DA:5,0
+DA:5,0
+DA:6,1
+end_of_record`
+	p := &LCOVParser{}
+	report, err := p.Parse(strings.NewReader(lcov))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	f := report.Files[0]
+	if f.LinesTotal != 2 {
+		t.Errorf("LinesTotal = %v, want 2", f.LinesTotal)
+	}
+	if f.LinesCovered != 1 {
+		t.Errorf("LinesCovered = %v, want 1", f.LinesCovered)
+	}
+	if len(f.UncoveredLines) != 1 || f.UncoveredLines[0] != 5 {
+		t.Errorf("UncoveredLines = %v, want [5]", f.UncoveredLines)
+	}
+}
+
 func TestLCOVParser_Parse_EmptyLines(t *testing.T) {
 	lcov := `SF:/src/test.go
 

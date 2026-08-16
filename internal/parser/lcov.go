@@ -32,6 +32,7 @@ func (p *LCOVParser) Parse(r io.Reader) (*coverage.Report, error) {
 
 	var current *coverage.FileCoverage
 	var currentLines map[int]bool
+	var lfSeen, lhSeen bool
 	firstLine := true
 
 	for scanner.Scan() {
@@ -59,6 +60,8 @@ func (p *LCOVParser) Parse(r io.Reader) (*coverage.Report, error) {
 				Path: filePath,
 			}
 			currentLines = make(map[int]bool)
+			lfSeen = false
+			lhSeen = false
 
 		case strings.HasPrefix(line, "DA:"):
 			if current == nil {
@@ -68,36 +71,38 @@ func (p *LCOVParser) Parse(r io.Reader) (*coverage.Report, error) {
 			if len(parts) >= 2 {
 				lineNum, _ := strconv.Atoi(parts[0])
 				hits, _ := strconv.Atoi(parts[1])
-				current.LinesTotal++
-				if hits > 0 {
-					current.LinesCovered++
-					currentLines[lineNum] = true
-				} else {
-					current.UncoveredLines = append(current.UncoveredLines, lineNum)
-					if !currentLines[lineNum] {
-						currentLines[lineNum] = false
-					}
-				}
+				// A line can appear in more than one DA: record within the
+				// same SF:/end_of_record block, e.g. a tracefile produced
+				// by concatenating per-suite runs before upload. OR the hit
+				// into whatever this line has already seen in this record
+				// -- one map entry per line, a hit beats a miss -- instead
+				// of treating every DA: as a distinct line. LinesTotal,
+				// LinesCovered and UncoveredLines are derived from this map
+				// at end_of_record so a repeated line is counted once.
+				currentLines[lineNum] = currentLines[lineNum] || hits > 0
 			}
 
 		case strings.HasPrefix(line, "LF:"):
 			if current != nil {
 				lf, _ := strconv.Atoi(strings.TrimPrefix(line, "LF:"))
-				if lf > 0 && current.LinesTotal != lf {
+				if lf > 0 {
 					current.LinesTotal = lf
+					lfSeen = true
 				}
 			}
 
 		case strings.HasPrefix(line, "LH:"):
 			if current != nil {
 				lh, _ := strconv.Atoi(strings.TrimPrefix(line, "LH:"))
-				if lh > 0 && current.LinesCovered != lh {
+				if lh > 0 {
 					current.LinesCovered = lh
+					lhSeen = true
 				}
 			}
 
 		case line == "end_of_record":
 			if current != nil {
+				finalizeRecord(current, currentLines, lfSeen, lhSeen)
 				mergeFileRecord(report, fileIndex, lineHits, current, currentLines)
 				current = nil
 				currentLines = nil
@@ -112,11 +117,42 @@ func (p *LCOVParser) Parse(r io.Reader) (*coverage.Report, error) {
 	// Flush a trailing record that has no closing end_of_record, e.g. a
 	// tracefile truncated by a killed test run or a cut-short upload.
 	if current != nil {
+		finalizeRecord(current, currentLines, lfSeen, lhSeen)
 		mergeFileRecord(report, fileIndex, lineHits, current, currentLines)
 	}
 
 	report.Calculate()
 	return report, nil
+}
+
+// finalizeRecord derives rec's LinesTotal, LinesCovered and UncoveredLines
+// from lines, the per-line hit map built while scanning rec's DA: records.
+// This is what collapses a line repeated across several DA: records in the
+// same block down to one entry instead of the raw per-record counts, which
+// double count the line in LinesTotal and can still report it as uncovered
+// after a later record hit it. Explicit LF:/LH: totals, when the tracefile
+// provided them, take priority over the derived counts -- lfSeen and lhSeen
+// say which were seen -- but UncoveredLines always comes from the map since
+// it has to be deduplicated and sorted regardless.
+func finalizeRecord(rec *coverage.FileCoverage, lines map[int]bool, lfSeen, lhSeen bool) {
+	covered := 0
+	var uncovered []int
+	for lineNum, hit := range lines {
+		if hit {
+			covered++
+		} else {
+			uncovered = append(uncovered, lineNum)
+		}
+	}
+	sort.Ints(uncovered)
+
+	if !lfSeen {
+		rec.LinesTotal = len(lines)
+	}
+	if !lhSeen {
+		rec.LinesCovered = covered
+	}
+	rec.UncoveredLines = uncovered
 }
 
 // mergeFileRecord adds rec to report.Files, or, if a prior record already
