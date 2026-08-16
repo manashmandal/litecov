@@ -20,9 +20,18 @@ func (p *LCOVParser) Parse(r io.Reader) (*coverage.Report, error) {
 	scanner := bufio.NewScanner(r)
 
 	var current *coverage.FileCoverage
+	firstLine := true
 
 	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+		text := scanner.Text()
+		if firstLine {
+			// A UTF-8 BOM isn't whitespace, so TrimSpace below won't strip
+			// it. Left in place it hides in front of the first record's
+			// "SF:" prefix and that record silently never matches.
+			text = strings.TrimPrefix(text, "\uFEFF")
+			firstLine = false
+		}
+		line := strings.TrimSpace(text)
 		if line == "" {
 			continue
 		}

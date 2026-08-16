@@ -199,6 +199,29 @@ end_of_record`
 	}
 }
 
+func TestLCOVParser_Parse_LeadingBOM(t *testing.T) {
+	// Mirrors the repro in issue #67: a UTF-8 BOM before the first "SF:"
+	// must not hide the record it belongs to.
+	lcov := "\uFEFFSF:/src/a.js\nDA:1,1\nDA:2,0\nend_of_record"
+	p := &LCOVParser{}
+	report, err := p.Parse(strings.NewReader(lcov))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if len(report.Files) != 1 {
+		t.Fatalf("got %d files, want 1 (BOM must not drop the first record)", len(report.Files))
+	}
+	if report.Files[0].Path != "/src/a.js" {
+		t.Errorf("Files[0].Path = %v, want /src/a.js", report.Files[0].Path)
+	}
+	if report.Files[0].LinesCovered != 1 {
+		t.Errorf("LinesCovered = %v, want 1", report.Files[0].LinesCovered)
+	}
+	if report.Files[0].LinesTotal != 2 {
+		t.Errorf("LinesTotal = %v, want 2", report.Files[0].LinesTotal)
+	}
+}
+
 func TestLCOVParser_Parse_EmptyLines(t *testing.T) {
 	lcov := `SF:/src/test.go
 
