@@ -32,7 +32,6 @@ func (p *LCOVParser) Parse(r io.Reader) (*coverage.Report, error) {
 
 	var current *coverage.FileCoverage
 	var currentLines map[int]bool
-	var lfSeen, lhSeen bool
 	firstLine := true
 
 	for scanner.Scan() {
@@ -60,8 +59,6 @@ func (p *LCOVParser) Parse(r io.Reader) (*coverage.Report, error) {
 				Path: filePath,
 			}
 			currentLines = make(map[int]bool)
-			lfSeen = false
-			lhSeen = false
 
 		case strings.HasPrefix(line, "DA:"):
 			if current == nil {
@@ -82,27 +79,18 @@ func (p *LCOVParser) Parse(r io.Reader) (*coverage.Report, error) {
 				currentLines[lineNum] = currentLines[lineNum] || hits > 0
 			}
 
-		case strings.HasPrefix(line, "LF:"):
-			if current != nil {
-				lf, _ := strconv.Atoi(strings.TrimPrefix(line, "LF:"))
-				if lf > 0 {
-					current.LinesTotal = lf
-					lfSeen = true
-				}
-			}
-
-		case strings.HasPrefix(line, "LH:"):
-			if current != nil {
-				lh, _ := strconv.Atoi(strings.TrimPrefix(line, "LH:"))
-				if lh > 0 {
-					current.LinesCovered = lh
-					lhSeen = true
-				}
-			}
+		// LF: and LH: are lcov's own summary of the DA: records in this
+		// block, not an independent source of truth -- they're derived the
+		// same way finalizeRecord derives LinesTotal/LinesCovered below, and
+		// a tracefile that concatenates shards can leave them stale or
+		// wrong. Trusting them over the DA: records they summarize lets the
+		// reported totals disagree with the line list the same parse
+		// produced, so they're ignored here the same way TN:, FNF:, FNH:,
+		// BRF: and BRH: already are.
 
 		case line == "end_of_record":
 			if current != nil {
-				finalizeRecord(current, currentLines, lfSeen, lhSeen)
+				finalizeRecord(current, currentLines)
 				mergeFileRecord(report, fileIndex, lineHits, current, currentLines)
 				current = nil
 				currentLines = nil
@@ -117,7 +105,7 @@ func (p *LCOVParser) Parse(r io.Reader) (*coverage.Report, error) {
 	// Flush a trailing record that has no closing end_of_record, e.g. a
 	// tracefile truncated by a killed test run or a cut-short upload.
 	if current != nil {
-		finalizeRecord(current, currentLines, lfSeen, lhSeen)
+		finalizeRecord(current, currentLines)
 		mergeFileRecord(report, fileIndex, lineHits, current, currentLines)
 	}
 
@@ -130,11 +118,10 @@ func (p *LCOVParser) Parse(r io.Reader) (*coverage.Report, error) {
 // This is what collapses a line repeated across several DA: records in the
 // same block down to one entry instead of the raw per-record counts, which
 // double count the line in LinesTotal and can still report it as uncovered
-// after a later record hit it. Explicit LF:/LH: totals, when the tracefile
-// provided them, take priority over the derived counts -- lfSeen and lhSeen
-// say which were seen -- but UncoveredLines always comes from the map since
-// it has to be deduplicated and sorted regardless.
-func finalizeRecord(rec *coverage.FileCoverage, lines map[int]bool, lfSeen, lhSeen bool) {
+// after a later record hit it. The DA: records are the only source for these
+// totals -- see the LF:/LH: comment above -- so there's nothing else to
+// reconcile them against.
+func finalizeRecord(rec *coverage.FileCoverage, lines map[int]bool) {
 	covered := 0
 	var uncovered []int
 	for lineNum, hit := range lines {
@@ -146,12 +133,8 @@ func finalizeRecord(rec *coverage.FileCoverage, lines map[int]bool, lfSeen, lhSe
 	}
 	sort.Ints(uncovered)
 
-	if !lfSeen {
-		rec.LinesTotal = len(lines)
-	}
-	if !lhSeen {
-		rec.LinesCovered = covered
-	}
+	rec.LinesTotal = len(lines)
+	rec.LinesCovered = covered
 	rec.UncoveredLines = uncovered
 }
 

@@ -157,7 +157,11 @@ LH:0`
 	}
 }
 
-func TestLCOVParser_Parse_LF_LH(t *testing.T) {
+func TestLCOVParser_Parse_LF_LH_Ignored(t *testing.T) {
+	// Mirrors the repro in issue #62: LF:/LH: are lcov's own summary of the
+	// DA: records in this block, not an independent source of truth. A
+	// stale or wrong header must not override the totals derived from the
+	// DA: records themselves.
 	lcov := `SF:/src/test.go
 DA:1,1
 DA:2,1
@@ -173,11 +177,14 @@ end_of_record`
 	if len(report.Files) != 1 {
 		t.Fatalf("got %d files, want 1", len(report.Files))
 	}
-	if report.Files[0].LinesTotal != 10 {
-		t.Errorf("LinesTotal = %v, want 10 (from LF)", report.Files[0].LinesTotal)
+	if report.Files[0].LinesTotal != 3 {
+		t.Errorf("LinesTotal = %v, want 3 (from DA:, LF:10 must be ignored)", report.Files[0].LinesTotal)
 	}
-	if report.Files[0].LinesCovered != 5 {
-		t.Errorf("LinesCovered = %v, want 5 (from LH)", report.Files[0].LinesCovered)
+	if report.Files[0].LinesCovered != 2 {
+		t.Errorf("LinesCovered = %v, want 2 (from DA:, LH:5 must be ignored)", report.Files[0].LinesCovered)
+	}
+	if len(report.Files[0].UncoveredLines) != 1 || report.Files[0].UncoveredLines[0] != 3 {
+		t.Errorf("UncoveredLines = %v, want [3]", report.Files[0].UncoveredLines)
 	}
 }
 
