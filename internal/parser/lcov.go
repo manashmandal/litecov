@@ -66,7 +66,17 @@ func (p *LCOVParser) Parse(r io.Reader) (*coverage.Report, error) {
 			}
 			parts := strings.Split(strings.TrimPrefix(line, "DA:"), ",")
 			if len(parts) >= 2 {
-				lineNum, _ := strconv.Atoi(parts[0])
+				lineNum, err := strconv.Atoi(parts[0])
+				// The lcov tracefile format defines the DA: line number as a
+				// non-zero integer. Atoi returns 0 on a parse failure, which
+				// -- left unchecked -- lands a non-numeric line right next to
+				// a literal "0" as the same bogus line-0 entry: it inflates
+				// LinesTotal for data that names no real line, and if unhit
+				// it surfaces as a line=0 GitHub annotation that points at
+				// nothing. Skip the record instead of counting it.
+				if err != nil || lineNum < 1 {
+					continue
+				}
 				hits, _ := strconv.Atoi(parts[1])
 				// A line can appear in more than one DA: record within the
 				// same SF:/end_of_record block, e.g. a tracefile produced

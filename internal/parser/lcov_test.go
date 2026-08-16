@@ -399,6 +399,54 @@ end_of_record`
 	}
 }
 
+func TestLCOVParser_Parse_ZeroLineNumberSkipped(t *testing.T) {
+	// Mirrors the first repro in issue #65: DA:0,0 is not a real line -- the
+	// lcov format defines the line number as a non-zero integer -- so it
+	// must be dropped instead of counted as an uncovered line 0.
+	lcov := `SF:/src/a.js
+DA:0,0
+DA:1,1
+end_of_record`
+	p := &LCOVParser{}
+	report, err := p.Parse(strings.NewReader(lcov))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	f := report.Files[0]
+	if f.LinesTotal != 1 {
+		t.Errorf("LinesTotal = %v, want 1 (DA:0,0 must not be counted)", f.LinesTotal)
+	}
+	if f.LinesCovered != 1 {
+		t.Errorf("LinesCovered = %v, want 1", f.LinesCovered)
+	}
+	if len(f.UncoveredLines) != 0 {
+		t.Errorf("UncoveredLines = %v, want none (no line=0 annotation)", f.UncoveredLines)
+	}
+}
+
+func TestLCOVParser_Parse_NonNumericLineNumberSkipped(t *testing.T) {
+	// Mirrors the second repro in issue #65: a non-numeric line number
+	// silently becomes 0 from strconv.Atoi's error return. Both bogus rows
+	// must be dropped, leaving only the genuine DA:1,1.
+	lcov := `SF:/src/a.js
+DA:abc,1
+DA:undefined,1
+DA:1,1
+end_of_record`
+	p := &LCOVParser{}
+	report, err := p.Parse(strings.NewReader(lcov))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	f := report.Files[0]
+	if f.LinesTotal != 1 {
+		t.Errorf("LinesTotal = %v, want 1 (non-numeric DA: rows must not be counted)", f.LinesTotal)
+	}
+	if f.LinesCovered != 1 {
+		t.Errorf("LinesCovered = %v, want 1", f.LinesCovered)
+	}
+}
+
 func TestLCOVParser_Parse_EmptyLines(t *testing.T) {
 	lcov := `SF:/src/test.go
 
