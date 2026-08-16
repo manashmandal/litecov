@@ -226,6 +226,16 @@ func TestNormalizePathForAnnotation(t *testing.T) {
 		// No markers found
 		{"simple.go", "simple.go"},
 		{"module.py", "module.py"},
+		// Regression for #17: the marker scan must pick whichever marker
+		// occurs earliest in the path, not the first entry in the markers
+		// slice to match anywhere in it.
+		{"/home/runner/work/repo/repo/src/api/handler.py", "src/api/handler.py"},
+		{"/home/runner/work/repo/repo/app/src/module.py", "app/src/module.py"},
+		{"github.com/user/repo/pkg/internal/cache.go", "pkg/internal/cache.go"},
+		// Regression for #17: the doubled GITHUB_WORKSPACE segment
+		// (/home/runner/work/<repo>/<repo>) is stripped even when nothing
+		// below it matches a known marker directory.
+		{"/home/runner/work/repo/repo/module.py", "module.py"},
 	}
 
 	for _, tt := range tests {

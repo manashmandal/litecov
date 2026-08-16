@@ -212,9 +212,27 @@ func isPathWrapperPrefix(prefix string) bool {
 
 // NormalizePathForAnnotation converts a Go module or Python package path to a repo-relative path.
 // e.g., "github.com/user/repo/internal/foo.go" -> "internal/foo.go"
-// e.g., "/home/runner/work/repo/src/mypackage/module.py" -> "src/mypackage/module.py"
+// e.g., "/home/runner/work/repo/repo/src/mypackage/module.py" -> "src/mypackage/module.py"
 func NormalizePathForAnnotation(path string) string {
-	// Common directory markers for Go and Python projects
+	// GitHub Actions checks the repo out to
+	// $GITHUB_WORKSPACE = /home/runner/work/<repo>/<repo>, so an absolute CI
+	// path almost always has the repo directory name twice in a row. That's
+	// a far more reliable repo-root marker than any directory name below
+	// it, so it's tried before the marker scan: a directory that happens to
+	// be named "api" or "src" earlier in the runner's outer path (e.g.
+	// "/home/api/work/...") must not be mistaken for the real one.
+	if strings.HasPrefix(path, "/") {
+		if rel, ok := trimDoubledWorkspaceSegment(path); ok {
+			return rel
+		}
+	}
+
+	// Common directory markers for Go and Python projects. The scan below
+	// picks whichever marker occurs earliest in the path, not the first
+	// entry in this slice to match anywhere: returning on list order meant
+	// an unrelated marker later in the slice (e.g. "/internal/") could win
+	// over one that actually sits closer to the repo root (e.g. "/pkg/")
+	// just because of where it was placed in this list.
 	markers := []string{
 		// Go markers
 		"/internal/", "/cmd/", "/pkg/", "/api/",
@@ -223,10 +241,14 @@ func NormalizePathForAnnotation(path string) string {
 		// Common test directories
 		"/test/", "/tests/",
 	}
+	bestIdx := -1
 	for _, marker := range markers {
-		if idx := strings.Index(path, marker); idx >= 0 {
-			return path[idx+1:] // +1 to skip the leading slash
+		if idx := strings.Index(path, marker); idx >= 0 && (bestIdx == -1 || idx < bestIdx) {
+			bestIdx = idx
 		}
+	}
+	if bestIdx >= 0 {
+		return path[bestIdx+1:] // +1 to skip the leading slash
 	}
 	// If no marker found but path contains github.com or similar,
 	// try to extract after the third slash (github.com/user/repo/...)
@@ -235,4 +257,18 @@ func NormalizePathForAnnotation(path string) string {
 		return parts[3]
 	}
 	return path
+}
+
+// trimDoubledWorkspaceSegment looks for a path segment that repeats itself
+// immediately (".../name/name/...") and, if found, returns everything after
+// the second occurrence plus true. This is the layout GitHub Actions always
+// checks the repo out to: $GITHUB_WORKSPACE is /home/runner/work/<repo>/<repo>.
+func trimDoubledWorkspaceSegment(path string) (string, bool) {
+	segments := strings.Split(path, "/")
+	for i := 1; i < len(segments)-1; i++ {
+		if segments[i] == segments[i+1] {
+			return strings.Join(segments[i+2:], "/"), true
+		}
+	}
+	return "", false
 }
