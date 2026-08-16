@@ -78,11 +78,20 @@ func isGoSourceFile(path string) bool {
 	if strings.HasPrefix(path, "vendor/") || strings.Contains(path, "/vendor/") {
 		return false
 	}
-	// Skip generated files (common patterns)
-	if strings.Contains(path, "generated") ||
+	// Skip testdata directory: the Go toolchain never compiles anything
+	// under testdata/, so it can never appear in a coverage profile.
+	if strings.HasPrefix(path, "testdata/") || strings.Contains(path, "/testdata/") {
+		return false
+	}
+	// Skip generated files (common patterns). "generated" is anchored to a
+	// whole directory segment and "mock_" to a filename prefix, so real
+	// source like "regenerated/handler.go" or "mock_data/service.go" isn't
+	// excluded just for containing the substring.
+	base := filepath.Base(path)
+	if strings.HasPrefix(path, "generated/") || strings.Contains(path, "/generated/") ||
 		strings.HasSuffix(path, ".pb.go") ||
 		strings.HasSuffix(path, "_mock.go") ||
-		strings.Contains(path, "mock_") {
+		strings.HasPrefix(base, "mock_") {
 		return false
 	}
 	return true
@@ -99,6 +108,12 @@ func isPythonSourceFile(path string) bool {
 	// Skip test files
 	if strings.HasSuffix(path, "_test.py") ||
 		strings.HasPrefix(base, "test_") {
+		return false
+	}
+	// Skip a top level tests/ or test/ directory: common pytest support
+	// modules like tests/helpers.py or tests/factories.py don't match a
+	// test_*.py naming convention but still aren't source needing coverage.
+	if strings.HasPrefix(path, "tests/") || strings.HasPrefix(path, "test/") {
 		return false
 	}
 	// Skip pytest configuration

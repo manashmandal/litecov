@@ -22,6 +22,19 @@ func TestIsSourceFile(t *testing.T) {
 		{"internal/mocks/mock_service.go", false},
 		{"internal/test/service_mock.go", false},
 
+		// Issue #16: testdata/ is never compiled by the Go toolchain, so
+		// it can never appear in a coverage profile and must not be
+		// reported as source with no coverage.
+		{"internal/foo/testdata/sample.go", false},
+		{"testdata/sample.go", false},
+		// Issue #16: "generated" and "mock_" used to be matched as a
+		// substring anywhere in the path, so real source living in a
+		// similarly-named directory was silently excluded from coverage
+		// reporting instead of being flagged as missing tests.
+		{"internal/mock_data/service.go", true},
+		{"internal/regenerated/handler.go", true},
+		{"internal/generated_docs_helper.go", true},
+
 		// Python files
 		{"src/mypackage/module.py", true},
 		{"lib/utils/helper.py", true},
@@ -31,6 +44,11 @@ func TestIsSourceFile(t *testing.T) {
 		{"tests/test_something.py", false},
 		{"conftest.py", false},
 		{"tests/conftest.py", false},
+		// Issue #16: pytest support modules under a top level tests/
+		// directory (not just files matching test_*.py) are not source
+		// that needs coverage.
+		{"tests/helpers.py", false},
+		{"tests/factories.py", false},
 		{"setup.py", false},
 		{"__pycache__/module.cpython-39.pyc", false},
 		{"src/__pycache__/module.py", false},
