@@ -2,7 +2,10 @@
 package paths
 
 import (
+	"fmt"
+	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -79,17 +82,35 @@ func isPythonSourceFile(path string) bool {
 
 // FindMatchingChangedFile returns the matching changed file path, or empty string if not found.
 // It performs exact match first, then suffix matching for paths with different prefixes.
+//
+// changedSet is a map, and Go randomizes map iteration order, so suffix matching
+// collects every candidate before deciding anything rather than returning on the
+// first one it happens to visit. A match is only accepted when exactly one
+// candidate remains: zero candidates is "not found", and two or more is ambiguous
+// and is treated as "not found" too, with a warning naming the candidates so the
+// ambiguity is visible instead of being resolved arbitrarily.
 func FindMatchingChangedFile(coveragePath string, changedSet map[string]bool) string {
 	if changedSet[coveragePath] {
 		return coveragePath
 	}
 	// Try suffix matching for paths that may have different prefixes
+	var candidates []string
 	for changedPath := range changedSet {
 		if HasSuffix(coveragePath, changedPath) || HasSuffix(changedPath, coveragePath) {
-			return changedPath
+			candidates = append(candidates, changedPath)
 		}
 	}
-	return ""
+	switch len(candidates) {
+	case 0:
+		return ""
+	case 1:
+		return candidates[0]
+	default:
+		sort.Strings(candidates)
+		fmt.Fprintf(os.Stderr, "Warning: coverage path %q matches multiple changed files (%s), skipping\n",
+			coveragePath, strings.Join(candidates, ", "))
+		return ""
+	}
 }
 
 // HasSuffix checks if path ends with suffix (with proper path boundary),

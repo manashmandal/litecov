@@ -90,6 +90,42 @@ func TestFindMatchingChangedFile(t *testing.T) {
 	}
 }
 
+// TestFindMatchingChangedFileAmbiguous covers issue #14: when a coverage path
+// suffix-matches more than one changed file (e.g. the same filename changed
+// at two directory depths in a monorepo), the match used to be resolved by
+// ranging over the changedSet map, so the same input returned a different
+// changed file across runs depending on Go's randomized map iteration order.
+// It must now report no match instead of guessing.
+func TestFindMatchingChangedFileAmbiguous(t *testing.T) {
+	changedSet := map[string]bool{
+		"internal/x.go":     true,
+		"pkg/internal/x.go": true,
+	}
+
+	tests := []struct {
+		coveragePath string
+		expected     string
+	}{
+		// Both "internal/x.go" and "pkg/internal/x.go" are legitimately
+		// suffix-anchored by the "github.com/foo/bar" module prefix, so this
+		// is a genuine ambiguity rather than the false-positive kind fixed
+		// for issue #13.
+		{"github.com/foo/bar/pkg/internal/x.go", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.coveragePath, func(t *testing.T) {
+			// Call repeatedly: the historical bug depended on map iteration
+			// order, so a single call could return the expected "" by luck.
+			for i := 0; i < 10; i++ {
+				if got := FindMatchingChangedFile(tt.coveragePath, changedSet); got != tt.expected {
+					t.Fatalf("FindMatchingChangedFile(%q) = %q, want %q (run %d)", tt.coveragePath, got, tt.expected, i)
+				}
+			}
+		})
+	}
+}
+
 func TestHasSuffix(t *testing.T) {
 	tests := []struct {
 		path     string
