@@ -370,6 +370,47 @@ func TestFormat_WithHyperlinks(t *testing.T) {
 	}
 }
 
+func TestFormat_BlobLinksAreNormalizedAndNotDoubled(t *testing.T) {
+	// Issue #18 repro: a Go coverage profile carries the module prefix and a
+	// coverage.py report carries the CI's absolute checkout path. Before the
+	// fix these produced a doubled "//" in the link (from the leading "/" on
+	// the absolute path) and a duplicated "github.com/user/repo" segment
+	// (from the module prefix stacking on top of RepoURL), both 404s.
+	report := &coverage.Report{Files: []coverage.FileCoverage{
+		{Path: "/home/runner/work/repo/repo/src/module.py", LinesCovered: 1, LinesTotal: 2, UncoveredLines: []int{7}},
+		{Path: "github.com/user/repo/internal/foo.go", LinesCovered: 1, LinesTotal: 2, UncoveredLines: []int{9}},
+	}}
+	report.Calculate()
+
+	result := Format(report, Options{
+		ShowFiles: "all",
+		RepoURL:   "https://github.com/user/repo",
+		SHA:       "abc123",
+	})
+
+	if strings.Contains(result, "blob/abc123//") {
+		t.Error("blob link has a doubled slash from an unnormalized absolute path")
+	}
+	if strings.Contains(result, "/blob/abc123/github.com/") {
+		t.Error("blob link has a duplicated module segment from an unnormalized module path")
+	}
+	if strings.Contains(result, "/home/runner") {
+		t.Error("output contains the unnormalized absolute CI checkout path")
+	}
+
+	wantLinks := []string{
+		"https://github.com/user/repo/blob/abc123/src/module.py",
+		"https://github.com/user/repo/blob/abc123/src/module.py#L7",
+		"https://github.com/user/repo/blob/abc123/internal/foo.go",
+		"https://github.com/user/repo/blob/abc123/internal/foo.go#L9",
+	}
+	for _, link := range wantLinks {
+		if !strings.Contains(result, link) {
+			t.Errorf("missing normalized link %q in output:\n%s", link, result)
+		}
+	}
+}
+
 func TestFormatUncoveredLines_Ranges(t *testing.T) {
 	lines := []int{1, 2, 3, 5, 7, 8, 9, 10}
 	result := formatUncoveredLines(lines, "", "", "")
@@ -423,6 +464,42 @@ func TestFormatRange_SingleLineWithHyperlink(t *testing.T) {
 	expected := "[L10](https://github.com/test/repo/blob/abc123/file.go#L10)"
 	if result != expected {
 		t.Errorf("expected %s, got %s", expected, result)
+	}
+}
+
+func TestFormatRange_NormalizesAndEscapesPath(t *testing.T) {
+	// Issue #18: formatRange is what interpolates the coverage path into the
+	// blob URL for a line link; it needs the same repo-relative
+	// normalization and percent escaping as formatFileName.
+	tests := []struct {
+		name     string
+		filePath string
+		expected string
+	}{
+		{
+			name:     "Go module prefix is stripped",
+			filePath: "github.com/user/repo/internal/foo.go",
+			expected: "[L9](https://github.com/user/repo/blob/abc123/internal/foo.go#L9)",
+		},
+		{
+			name:     "absolute CI checkout path is stripped",
+			filePath: "/home/runner/work/repo/repo/src/module.py",
+			expected: "[L9](https://github.com/user/repo/blob/abc123/src/module.py#L9)",
+		},
+		{
+			name:     "space in filename is percent-escaped",
+			filePath: "src/my file.go",
+			expected: "[L9](https://github.com/user/repo/blob/abc123/src/my%20file.go#L9)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := formatRange(9, 9, "https://github.com/user/repo", "abc123", tt.filePath)
+			if got != tt.expected {
+				t.Errorf("formatRange(%q) = %q, want %q", tt.filePath, got, tt.expected)
+			}
+		})
 	}
 }
 
@@ -627,6 +704,62 @@ func TestFormatFileName(t *testing.T) {
 			t.Errorf("expected %s, got %s", expected, result)
 		}
 	})
+}
+
+func TestFormatFileName_NormalizesAndEscapesPath(t *testing.T) {
+	// Issue #18: a Go coverage profile carries the module prefix and a
+	// coverage.py report carries the CI's absolute checkout path. Both the
+	// File column text and its blob link must show the repo-relative path,
+	// and the link must percent-escape any character that would otherwise
+	// break the markdown link syntax.
+	opts := Options{RepoURL: "https://github.com/user/repo", SHA: "abc123"}
+
+	tests := []struct {
+		name     string
+		path     string
+		opts     Options
+		expected string
+	}{
+		{
+			name:     "Go module prefix is stripped from link and text",
+			path:     "github.com/user/repo/internal/foo.go",
+			opts:     opts,
+			expected: "[`internal/foo.go`](https://github.com/user/repo/blob/abc123/internal/foo.go)",
+		},
+		{
+			name:     "absolute CI checkout path is stripped from link and text",
+			path:     "/home/runner/work/repo/repo/src/module.py",
+			opts:     opts,
+			expected: "[`src/module.py`](https://github.com/user/repo/blob/abc123/src/module.py)",
+		},
+		{
+			name:     "already repo-relative path is unchanged",
+			path:     "internal/foo.go",
+			opts:     opts,
+			expected: "[`internal/foo.go`](https://github.com/user/repo/blob/abc123/internal/foo.go)",
+		},
+		{
+			name:     "unnormalized path is shown relative even without a link",
+			path:     "github.com/user/repo/internal/foo.go",
+			opts:     Options{},
+			expected: "`internal/foo.go`",
+		},
+		{
+			name:     "space and # are percent-escaped in the link but not the display text",
+			path:     "src/my file #2.go",
+			opts:     opts,
+			expected: "[`src/my file #2.go`](https://github.com/user/repo/blob/abc123/src/my%20file%20%232.go)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := formatFileName(tt.path, tt.opts)
+			if got != tt.expected {
+				t.Errorf("formatFileName(%q) = %q, want %q", tt.path, got, tt.expected)
+			}
+		})
+	}
 }
 
 func TestFormatFooter(t *testing.T) {

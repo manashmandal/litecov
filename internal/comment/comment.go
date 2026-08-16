@@ -2,6 +2,7 @@ package comment
 
 import (
 	"fmt"
+	"net/url"
 	"sort"
 	"strings"
 
@@ -313,11 +314,18 @@ func formatFileDelta(fc coverage.FileChange) string {
 	return fmt.Sprintf("`%.2f%%`", fc.Delta)
 }
 
+// formatFileName renders a coverage report path as an inline code span,
+// linked to the file's blob at opts.SHA when a repo URL is configured. The
+// path is normalized to repo-relative first (see NormalizePathForAnnotation)
+// since a Go coverage profile carries the module prefix and a coverage.py
+// report carries the CI's absolute checkout path, neither of which line up
+// with a github.com/<owner>/<repo>/blob/<sha>/<path> URL as-is (issue #18).
 func formatFileName(path string, opts Options) string {
+	displayPath := paths.NormalizePathForAnnotation(path)
 	if opts.RepoURL != "" && opts.SHA != "" {
-		return fmt.Sprintf("[`%s`](%s/blob/%s/%s)", path, opts.RepoURL, opts.SHA, path)
+		return fmt.Sprintf("[`%s`](%s/blob/%s/%s)", displayPath, opts.RepoURL, opts.SHA, encodeURLPath(displayPath))
 	}
-	return fmt.Sprintf("`%s`", path)
+	return fmt.Sprintf("`%s`", displayPath)
 }
 
 func formatFooter() string {
@@ -365,15 +373,30 @@ func formatUncoveredLines(lines []int, repoURL, sha, filePath string) string {
 
 func formatRange(start, end int, repoURL, sha, filePath string) string {
 	if repoURL != "" && sha != "" {
+		// Same repo-relative normalization as formatFileName, plus percent
+		// escaping: a path segment left as-is in the URL breaks the link on
+		// a space, '#', or '?' in the filename (issue #18).
+		linkPath := encodeURLPath(paths.NormalizePathForAnnotation(filePath))
 		if start == end {
-			return fmt.Sprintf("[L%d](%s/blob/%s/%s#L%d)", start, repoURL, sha, filePath, start)
+			return fmt.Sprintf("[L%d](%s/blob/%s/%s#L%d)", start, repoURL, sha, linkPath, start)
 		}
-		return fmt.Sprintf("[L%d-%d](%s/blob/%s/%s#L%d-L%d)", start, end, repoURL, sha, filePath, start, end)
+		return fmt.Sprintf("[L%d-%d](%s/blob/%s/%s#L%d-L%d)", start, end, repoURL, sha, linkPath, start, end)
 	}
 	if start == end {
 		return fmt.Sprintf("L%d", start)
 	}
 	return fmt.Sprintf("L%d-%d", start, end)
+}
+
+// encodeURLPath percent-encodes each segment of a repo-relative path so a
+// filename containing a space, '#', or '?' can't produce a malformed
+// markdown link, while leaving the '/' segment separators intact.
+func encodeURLPath(p string) string {
+	segments := strings.Split(p, "/")
+	for i, seg := range segments {
+		segments[i] = url.PathEscape(seg)
+	}
+	return strings.Join(segments, "/")
 }
 
 func filterFiles(files []coverage.FileCoverage, opts Options) []coverage.FileCoverage {
