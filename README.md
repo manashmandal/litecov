@@ -9,7 +9,7 @@ Lightweight code coverage reporter for GitHub Actions. Zero infrastructure, one-
 ## Quick Start
 
 ```yaml
-- uses: manashmandal/litecov@v1
+- uses: manashmandal/litecov@v3
 ```
 
 That's it. LiteCov will auto-detect your coverage file and post a PR comment.
@@ -57,7 +57,7 @@ jobs:
       - name: Run tests with coverage
         run: go test -coverprofile=coverage.out ./...
 
-      - uses: manashmandal/litecov@v1
+      - uses: manashmandal/litecov@v3
         with:
           coverage-file: coverage.out
 ```
@@ -65,7 +65,7 @@ jobs:
 ### With Options
 
 ```yaml
-- uses: manashmandal/litecov@v1
+- uses: manashmandal/litecov@v3
   with:
     coverage-file: coverage.lcov
     format: lcov
@@ -80,7 +80,7 @@ jobs:
 - name: Run tests
   run: pytest --cov=src --cov-report=xml
 
-- uses: manashmandal/litecov@v1
+- uses: manashmandal/litecov@v3
   with:
     coverage-file: coverage.xml
 ```
@@ -91,7 +91,7 @@ jobs:
 - name: Run tests
   run: npm test -- --coverage --coverageReporters=lcov
 
-- uses: manashmandal/litecov@v1
+- uses: manashmandal/litecov@v3
   with:
     coverage-file: coverage/lcov.info
 ```
@@ -109,7 +109,7 @@ JaCoCo doesn't export Cobertura XML. Convert its native report with [cover2cover
     curl -sL https://raw.githubusercontent.com/rix0rrr/cover2cover/master/cover2cover.py -o cover2cover.py
     python3 cover2cover.py target/site/jacoco/jacoco.xml src/main/java > target/site/jacoco/cobertura.xml
 
-- uses: manashmandal/litecov@v1
+- uses: manashmandal/litecov@v3
   with:
     coverage-file: target/site/jacoco/cobertura.xml
 ```
@@ -123,13 +123,13 @@ single combined PR comment instead of only the last file litecov happened to
 open:
 
 ```yaml
-- uses: manashmandal/litecov@v1
+- uses: manashmandal/litecov@v3
   with:
     coverage-file: 'packages/*/coverage/lcov.info'
 ```
 
 ```yaml
-- uses: manashmandal/litecov@v1
+- uses: manashmandal/litecov@v3
   with:
     coverage-file: backend/coverage.out,frontend/coverage/lcov.info
 ```
@@ -192,7 +192,7 @@ jobs:
           name: base-coverage
           path: base
 
-      - uses: manashmandal/litecov@v1
+      - uses: manashmandal/litecov@v3
         with:
           coverage-file: coverage.out
           base-coverage-file: base/coverage.out
@@ -240,7 +240,7 @@ so it can diff them.
 ### Using Outputs
 
 ```yaml
-- uses: manashmandal/litecov@v1
+- uses: manashmandal/litecov@v3
   id: coverage
 
 - name: Check coverage
@@ -277,7 +277,7 @@ To get comments on fork PRs, run LiteCov from a workflow that actually has write
         - name: Run tests with coverage
           run: go test -coverprofile=coverage.out ./...
 
-        - uses: manashmandal/litecov@v1
+        - uses: manashmandal/litecov@v3
           with:
             coverage-file: coverage.out
   ```
@@ -373,7 +373,7 @@ threshold, so a PR that adds untested code fails even when it barely moves
 the project number:
 
 ```yaml
-- uses: manashmandal/litecov@v1
+- uses: manashmandal/litecov@v3
   with:
     threshold: 80
     patch-threshold: 80

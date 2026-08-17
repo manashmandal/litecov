@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - 'v*.*.*'  # Triggers on v1.0.0, v1.1.0, etc.
+      - 'v*'  # Triggers on v1, v2, v3, etc.
 
 permissions:
   contents: write
@@ -46,13 +46,6 @@ jobs:
             litecov-linux-amd64
             litecov-darwin-amd64
             litecov-darwin-arm64
-
-      - name: Update major version tag
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -f ${{ steps.version.outputs.major }}
-          git push origin ${{ steps.version.outputs.major }} --force
 
   publish-image:
     needs: release
