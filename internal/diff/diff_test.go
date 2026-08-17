@@ -20,14 +20,16 @@ func TestParseUnifiedDiff(t *testing.T) {
 			input: `diff --git a/file.go b/file.go
 --- a/file.go
 +++ b/file.go
-@@ -10,3 +10,5 @@ func foo() {
+@@ -10,2 +10,4 @@ func foo() {
+ context before
 +added line 1
-+added line 2`,
++added line 2
+ context after`,
 			expected: []FileDiff{
 				{
 					Path: "file.go",
 					AddedLines: []LineRange{
-						{Start: 10, End: 14},
+						{Start: 11, End: 12},
 					},
 				},
 			},
@@ -37,17 +39,20 @@ func TestParseUnifiedDiff(t *testing.T) {
 			input: `diff --git a/file.go b/file.go
 --- a/file.go
 +++ b/file.go
-@@ -10,3 +10,5 @@ func foo() {
+@@ -10,2 +10,3 @@ func foo() {
+ context
 +added line
-@@ -20 +22,3 @@ func bar() {
+ context
+@@ -20,1 +22,3 @@ func bar() {
+ context
 +another added
 +more added`,
 			expected: []FileDiff{
 				{
 					Path: "file.go",
 					AddedLines: []LineRange{
-						{Start: 10, End: 14},
-						{Start: 22, End: 24},
+						{Start: 11, End: 11},
+						{Start: 23, End: 24},
 					},
 				},
 			},
@@ -58,24 +63,28 @@ func TestParseUnifiedDiff(t *testing.T) {
 --- a/first.go
 +++ b/first.go
 @@ -5,2 +5,4 @@ package main
+ context
 +line 1
 +line 2
+ context
 diff --git a/second.go b/second.go
 --- a/second.go
 +++ b/second.go
 @@ -10,1 +10,3 @@ func test() {
-+added`,
+ context
++added
+ context`,
 			expected: []FileDiff{
 				{
 					Path: "first.go",
 					AddedLines: []LineRange{
-						{Start: 5, End: 8},
+						{Start: 6, End: 7},
 					},
 				},
 				{
 					Path: "second.go",
 					AddedLines: []LineRange{
-						{Start: 10, End: 12},
+						{Start: 11, End: 11},
 					},
 				},
 			},
@@ -86,7 +95,7 @@ diff --git a/second.go b/second.go
 new file mode 100644
 --- /dev/null
 +++ b/newfile.go
-@@ -0,0 +1,10 @@
+@@ -0,0 +1,4 @@
 +package main
 +
 +func main() {
@@ -95,7 +104,7 @@ new file mode 100644
 				{
 					Path: "newfile.go",
 					AddedLines: []LineRange{
-						{Start: 1, End: 10},
+						{Start: 1, End: 4},
 					},
 				},
 			},
@@ -142,7 +151,7 @@ diff --git a/file.go b/file.go
 				{
 					Path: "file.go",
 					AddedLines: []LineRange{
-						{Start: 1, End: 3},
+						{Start: 1, End: 1},
 					},
 				},
 			},
@@ -159,7 +168,7 @@ diff --git a/file.go b/file.go
 				{
 					Path: "path with spaces/file.go",
 					AddedLines: []LineRange{
-						{Start: 1, End: 4},
+						{Start: 1, End: 2},
 					},
 				},
 			},
@@ -181,16 +190,20 @@ diff --git a/file.go b/file.go
 --- a/file.go
 +++ b/file.go
 @@ -5,3 +5,0 @@ func foo() {
--deleted
+-deleted 1
+-deleted 2
+-deleted 3
 @@ -15,2 +12,5 @@ func bar() {
+ context
 +added 1
 +added 2
-+added 3`,
++added 3
+ context`,
 			expected: []FileDiff{
 				{
 					Path: "file.go",
 					AddedLines: []LineRange{
-						{Start: 12, End: 16},
+						{Start: 13, End: 15},
 					},
 				},
 			},
@@ -206,7 +219,7 @@ diff --git a/file.go b/file.go
 				{
 					Path: "internal/pkg/subpkg/file.go",
 					AddedLines: []LineRange{
-						{Start: 1, End: 2},
+						{Start: 1, End: 1},
 					},
 				},
 			},
@@ -222,7 +235,7 @@ diff --git a/file.go b/file.go
 				{
 					Path: "file.go",
 					AddedLines: []LineRange{
-						{Start: 10, End: 12},
+						{Start: 10, End: 10},
 					},
 				},
 			},
@@ -238,7 +251,7 @@ diff --git a/file.go b/file.go
 				{
 					Path: "bigfile.go",
 					AddedLines: []LineRange{
-						{Start: 10000, End: 10009},
+						{Start: 10000, End: 10000},
 					},
 				},
 			},
@@ -271,9 +284,9 @@ diff --git a/file.go b/file.go
 				{
 					Path: "file.go",
 					AddedLines: []LineRange{
-						{Start: 1, End: 2},
-						{Start: 4, End: 5},
-						{Start: 7, End: 8},
+						{Start: 1, End: 1},
+						{Start: 4, End: 4},
+						{Start: 7, End: 7},
 					},
 				},
 			},
@@ -289,7 +302,7 @@ diff --git a/file.go b/file.go
 				{
 					Path: "src/café.go",
 					AddedLines: []LineRange{
-						{Start: 3, End: 4},
+						{Start: 3, End: 3},
 					},
 				},
 			},
@@ -305,7 +318,7 @@ diff --git a/file.go b/file.go
 				{
 					Path: "src/a b/c.go",
 					AddedLines: []LineRange{
-						{Start: 1, End: 3},
+						{Start: 1, End: 1},
 					},
 				},
 			},
@@ -317,7 +330,7 @@ diff --git a/file.go b/file.go
 				{
 					Path: "file.go",
 					AddedLines: []LineRange{
-						{Start: 1, End: 3},
+						{Start: 1, End: 1},
 					},
 				},
 			},
@@ -333,7 +346,192 @@ diff --git a/file.go b/file.go
 				{
 					Path: "new.go",
 					AddedLines: []LineRange{
-						{Start: 1, End: 2},
+						{Start: 1, End: 1},
+					},
+				},
+			},
+		},
+		{
+			name: "context lines around an added line are not reported as added",
+			input: `diff --git a/file.go b/file.go
+--- a/file.go
++++ b/file.go
+@@ -8,7 +8,7 @@ func foo() {
+ context 1
+ context 2
+ context 3
+-old line
++new line
+ context 4
+ context 5
+ context 6`,
+			expected: []FileDiff{
+				{
+					Path: "file.go",
+					AddedLines: []LineRange{
+						{Start: 11, End: 11},
+					},
+				},
+			},
+		},
+		{
+			name: "deletion-only hunk with GitHub-style context reports no added lines",
+			input: `diff --git a/file.go b/file.go
+--- a/file.go
++++ b/file.go
+@@ -10,7 +10,6 @@ func foo() {
+ context 1
+ context 2
+ context 3
+-removed line
+ context 4
+ context 5
+ context 6`,
+			expected: nil,
+		},
+		{
+			name: "no newline at end of file marker does not advance the line counter",
+			input: `diff --git a/file.go b/file.go
+--- a/file.go
++++ b/file.go
+@@ -1,2 +1,2 @@ func foo() {
+ context
+-old last line
+\ No newline at end of file
++new last line`,
+			expected: []FileDiff{
+				{
+					Path: "file.go",
+					AddedLines: []LineRange{
+						{Start: 2, End: 2},
+					},
+				},
+			},
+		},
+		{
+			// Built from the real "patch" field GitHub's REST API returned for
+			// cmd/litecov/main.go in this repo's PR #4 (three lines of context,
+			// the format every GitHub-sourced diff uses). Regression test for
+			// https://github.com/manashmandal/litecov/issues/8: the old parser
+			// reported the full hunk spans, 96 lines, as added; only 65 lines
+			// were actually touched by the PR.
+			name: "real GitHub patch with three lines of context",
+			input: `diff --git a/cmd/litecov/main.go b/cmd/litecov/main.go
+--- a/cmd/litecov/main.go
++++ b/cmd/litecov/main.go
+@@ -259,32 +259,58 @@ func outputAnnotations(report *coverage.Report, changedFiles []string) {
+ 		changedSet[f] = true
+ 	}
+ 
++	// Track which changed files have coverage data
++	coveredChangedFiles := make(map[string]bool)
++
+ 	for _, file := range report.Files {
+ 		// Normalize path: strip Go module prefix to get repo-relative path
+ 		// Coverage paths may be like "github.com/user/repo/internal/foo.go"
+ 		// but we need "internal/foo.go" for GitHub annotations
+ 		relativePath := normalizePathForAnnotation(file.Path)
+ 
+ 		// Check if file is in changed set (use normalized path for matching)
+-		if len(changedFiles) > 0 && !isPathInChangedSet(relativePath, changedSet) {
+-			continue
++		matchedPath := ""
++		if len(changedFiles) > 0 {
++			matchedPath = findMatchingChangedFile(relativePath, changedSet)
++			if matchedPath == "" {
++				continue
++			}
++			coveredChangedFiles[matchedPath] = true
+ 		}
+ 
+ 		if len(file.UncoveredLines) == 0 {
+ 			continue
+ 		}
+ 
++		annotationPath := relativePath
++		if matchedPath != "" {
++			annotationPath = matchedPath
++		}
++
+ 		ranges := comment.GroupConsecutiveLines(file.UncoveredLines)
+ 		for _, r := range ranges {
+ 			if r.Start == r.End {
+ 				fmt.Printf("::warning file=%s,line=%d,title=Uncovered::Line %d not covered by tests\n",
+-					relativePath, r.Start, r.Start)
++					annotationPath, r.Start, r.Start)
+ 			} else {
+ 				fmt.Printf("::warning file=%s,line=%d,endLine=%d,title=Uncovered::Lines %d-%d not covered by tests\n",
+-					relativePath, r.Start, r.End, r.Start, r.End)
++					annotationPath, r.Start, r.End, r.Start, r.End)
+ 			}
+ 		}
+ 	}
++
++	// Output annotations for changed files that have no coverage data at all
++	// These are files that were never executed by any test
++	for _, changedFile := range changedFiles {
++		if coveredChangedFiles[changedFile] {
++			continue
++		}
++		// Only annotate source files (skip test files, configs, etc.)
++		if !isSourceFile(changedFile) {
++			continue
++		}
++		fmt.Printf("::warning file=%s,line=1,title=No Coverage::File has no test coverage\n", changedFile)
++	}
+ }
+ 
+ // normalizePathForAnnotation converts a Go module path to a repo-relative path
+@@ -320,3 +346,38 @@ func isPathInChangedSet(path string, changedSet map[string]bool) bool {
+ 	}
+ 	return false
+ }
++
++// findMatchingChangedFile returns the matching changed file path, or empty string if not found
++func findMatchingChangedFile(coveragePath string, changedSet map[string]bool) string {
++	if changedSet[coveragePath] {
++		return coveragePath
++	}
++	// Try suffix matching for paths that may have different prefixes
++	for changedPath := range changedSet {
++		if strings.HasSuffix(coveragePath, changedPath) || strings.HasSuffix(changedPath, coveragePath) {
++			return changedPath
++		}
++	}
++	return ""
++}
++
++// isSourceFile checks if a file is a source file that should have coverage
++func isSourceFile(path string) bool {
++	// Only check Go files for now (can be extended for other languages)
++	if !strings.HasSuffix(path, ".go") {
++		return false
++	}
++	// Skip test files
++	if strings.HasSuffix(path, "_test.go") {
++		return false
++	}
++	// Skip generated files (common patterns)
++	if strings.Contains(path, "/vendor/") ||
++		strings.Contains(path, "generated") ||
++		strings.Contains(path, ".pb.go") ||
++		strings.Contains(path, "_mock.go") ||
++		strings.Contains(path, "mock_") {
++		return false
++	}
++	return true
++}`,
+			expected: []FileDiff{
+				{
+					Path: "cmd/litecov/main.go",
+					AddedLines: []LineRange{
+						{Start: 262, End: 264},
+						{Start: 272, End: 278},
+						{Start: 285, End: 289},
+						{Start: 294, End: 294},
+						{Start: 297, End: 297},
+						{Start: 301, End: 313},
+						{Start: 349, End: 383},
 					},
 				},
 			},

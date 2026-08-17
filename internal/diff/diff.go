@@ -27,8 +27,13 @@ var (
 )
 
 // ParseUnifiedDiff parses unified diff format output to extract changed line ranges.
-// Input is the output of `git diff --unified=0` or GitHub API diff.
-// It returns a slice of FileDiff containing the new line numbers for added/modified lines.
+// Input is the output of `git diff` or the GitHub API diff/patch, in standard
+// unified diff format with any amount of context. GitHub always includes three
+// lines of context around a change and gives no way to turn that off, so the
+// hunk body has to be walked line by line to tell which new-side lines the PR
+// actually added rather than just carried along as context.
+// It returns a slice of FileDiff containing the new line numbers for lines the
+// PR added; unchanged context lines and removed lines are excluded.
 func ParseUnifiedDiff(diffOutput string) []FileDiff {
 	if diffOutput == "" {
 		return nil
@@ -38,6 +43,8 @@ func ParseUnifiedDiff(diffOutput string) []FileDiff {
 	var currentFile *FileDiff
 	var isBinary bool
 	var sawHunk bool
+	var inHunk bool
+	var lineNo int // next new-side line number while walking a hunk body
 
 	lines := strings.Split(diffOutput, "\n")
 
@@ -53,6 +60,7 @@ func ParseUnifiedDiff(diffOutput string) []FileDiff {
 			currentFile = &FileDiff{AddedLines: []LineRange{}}
 			isBinary = false
 			sawHunk = false
+			inHunk = false
 			continue
 		}
 
@@ -95,26 +103,47 @@ func ParseUnifiedDiff(diffOutput string) []FileDiff {
 
 			start, err := strconv.Atoi(matches[1])
 			if err != nil {
+				inHunk = false
 				continue
 			}
 
-			count := 1
-			if matches[2] != "" {
-				count, err = strconv.Atoi(matches[2])
-				if err != nil {
-					continue
-				}
-			}
+			lineNo = start
+			inHunk = true
+			continue
+		}
 
-			if count == 0 {
-				continue
-			}
+		if !inHunk {
+			continue
+		}
 
-			lineRange := LineRange{
-				Start: start,
-				End:   start + count - 1,
-			}
-			currentFile.AddedLines = append(currentFile.AddedLines, lineRange)
+		// Walk the hunk body: a "+" line is one the PR added, a " " line is
+		// unchanged context GitHub carried along for readability, and a "-"
+		// line only ever existed on the old side, so the three don't play
+		// the same role. Only "+" lines get recorded; "+" and " " both
+		// advance lineNo since both occupy a line on the new side, while
+		// "-" and the "\ No newline at end of file" marker advance nothing.
+		// A blank context line sometimes arrives as "" rather than " ", so
+		// default to context instead of indexing an empty string.
+		prefix := byte(' ')
+		if line != "" {
+			prefix = line[0]
+		}
+
+		switch prefix {
+		case '+':
+			appendAddedLine(currentFile, lineNo)
+			lineNo++
+		case ' ':
+			lineNo++
+		case '-', '\\':
+			// Old-side-only line, or a "\ No newline at end of file"
+			// marker: neither occupies a new-side line number.
+		default:
+			// Not a valid hunk body line - the checks above already
+			// handle a new "diff --git" header and a new hunk header for
+			// this file, so anything else means malformed or truncated
+			// input. Stop trusting lineNo until the next hunk header.
+			inHunk = false
 		}
 	}
 
@@ -123,6 +152,19 @@ func ParseUnifiedDiff(diffOutput string) []FileDiff {
 	}
 
 	return result
+}
+
+// appendAddedLine records new-side line n as added, extending the last range
+// in f.AddedLines when n continues it so a run of consecutive "+" lines
+// collapses into a single range instead of one per line.
+func appendAddedLine(f *FileDiff, n int) {
+	if len(f.AddedLines) > 0 {
+		if last := &f.AddedLines[len(f.AddedLines)-1]; last.End == n-1 {
+			last.End = n
+			return
+		}
+	}
+	f.AddedLines = append(f.AddedLines, LineRange{Start: n, End: n})
 }
 
 // gitDiffPath turns a "---"/"+++" path spec into a repo-relative path. It
