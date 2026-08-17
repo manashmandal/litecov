@@ -114,6 +114,30 @@ JaCoCo doesn't export Cobertura XML. Convert its native report with [cover2cover
     coverage-file: target/site/jacoco/cobertura.xml
 ```
 
+### Monorepo / Multiple Coverage Files
+
+`coverage-file` accepts a comma separated list and/or glob patterns. Every
+match is parsed and merged into one report, so a monorepo, a multi-language
+repo, or a matrix job that produces several coverage files per commit gets a
+single combined PR comment instead of only the last file litecov happened to
+open:
+
+```yaml
+- uses: manashmandal/litecov@v1
+  with:
+    coverage-file: 'packages/*/coverage/lcov.info'
+```
+
+```yaml
+- uses: manashmandal/litecov@v1
+  with:
+    coverage-file: backend/coverage.out,frontend/coverage/lcov.info
+```
+
+A file listed or matched more than once is only parsed once. A line covered
+in any one of the merged files counts as covered in the combined report,
+the same rule `lcov -a` uses to combine tracefiles.
+
 ### Comparing Against a Base Branch
 
 LiteCov has no server or cache, so it can't look up the base branch's coverage
@@ -183,7 +207,7 @@ so it can diff them.
 
 | Input | Default | Description |
 |-------|---------|-------------|
-| `coverage-file` | Auto-detect | Path to coverage report |
+| `coverage-file` | Auto-detect | Path to coverage report. Comma separated list and/or glob patterns are merged into one report |
 | `format` | `auto` | Format: `auto`, `lcov`, `cobertura`, `go` |
 | `show-files` | `changed` | Files to show (see below) |
 | `threshold` | `0` | Minimum coverage % to pass |

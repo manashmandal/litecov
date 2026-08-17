@@ -74,6 +74,106 @@ func (r *Report) Misses() int {
 	return r.TotalLines - r.TotalCovered - r.Partials
 }
 
+// MergeReports combines several coverage reports into one, so a monorepo, a
+// multi-language repo, or a split test suite that produces more than one
+// coverage file per commit can still get a single PR report instead of
+// litecov being limited to whichever one file it happened to be pointed at
+// (issue #89). A path present in more than one input report is folded into
+// a single FileCoverage instead of appearing twice and double-counting its
+// lines in the merged Report's totals; a line is covered in the result if
+// any input report covered it, the same union rule mergeFileRecord already
+// applies when one LCOV tracefile repeats an SF: record for a path
+// (internal/parser/lcov.go), and how lcov -a combines tracefiles.
+//
+// reports is walked in order and nil entries are skipped, so a caller can
+// pass every parsed report straight through without filtering first. A nil
+// or empty reports returns an empty, already-Calculate()'d Report -- 0
+// coverage, not a divide-by-zero NaN.
+func MergeReports(reports []*Report) *Report {
+	merged := &Report{}
+	fileIndex := make(map[string]int)
+
+	for _, r := range reports {
+		if r == nil {
+			continue
+		}
+		for i := range r.Files {
+			src := &r.Files[i]
+			idx, ok := fileIndex[src.Path]
+			if !ok {
+				idx = len(merged.Files)
+				fileIndex[src.Path] = idx
+				merged.Files = append(merged.Files, FileCoverage{Path: src.Path})
+			}
+			mergeFileCoverage(&merged.Files[idx], src)
+		}
+		// Both are 0 on every report today -- see Report's doc comment on
+		// Branches -- so this is a no-op in practice until a parser starts
+		// setting them, and correct once one does.
+		merged.Branches += r.Branches
+		merged.Partials += r.Partials
+	}
+
+	merged.Calculate()
+	return merged
+}
+
+// mergeFileCoverage folds src's line coverage into dst, which already
+// shares src's Path. A line covered on either side ends up covered in dst
+// -- two reports measuring the same file, e.g. an integration suite
+// re-running code a unit suite already exercised, shouldn't have that
+// overlap counted as two separate lines -- so this is a set union over line
+// numbers rather than dst.LinesCovered + src.LinesCovered. LinesTotal and
+// LinesCovered are then rederived from the merged CoveredLines/
+// UncoveredLines, the same relationship every parser's own finalize step
+// already keeps (LinesTotal == len(CoveredLines)+len(UncoveredLines)), so
+// merging a single report back into an empty dst reproduces its original
+// numbers exactly.
+func mergeFileCoverage(dst *FileCoverage, src *FileCoverage) {
+	covered := make(map[int]bool, len(dst.CoveredLines)+len(src.CoveredLines))
+	for _, ln := range dst.CoveredLines {
+		covered[ln] = true
+	}
+	for _, ln := range src.CoveredLines {
+		covered[ln] = true
+	}
+
+	uncovered := make(map[int]bool, len(dst.UncoveredLines)+len(src.UncoveredLines))
+	for _, ln := range dst.UncoveredLines {
+		uncovered[ln] = true
+	}
+	for _, ln := range src.UncoveredLines {
+		uncovered[ln] = true
+	}
+	// A line uncovered on one side and covered on the other is covered:
+	// drop it from uncovered so it isn't counted in both sets once
+	// LinesTotal is derived from their combined length below.
+	for ln := range covered {
+		delete(uncovered, ln)
+	}
+
+	dst.CoveredLines = sortedIntKeys(covered)
+	dst.UncoveredLines = sortedIntKeys(uncovered)
+	dst.LinesCovered = len(dst.CoveredLines)
+	dst.LinesTotal = len(dst.CoveredLines) + len(dst.UncoveredLines)
+}
+
+// sortedIntKeys returns m's keys as a sorted slice, or nil for an empty m --
+// the same nil-when-empty convention finalizeRecord and finalizeCoberturaFile
+// already use for UncoveredLines/CoveredLines -- rather than a non-nil empty
+// slice a caller might treat differently.
+func sortedIntKeys(m map[int]bool) []int {
+	if len(m) == 0 {
+		return nil
+	}
+	keys := make([]int, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Ints(keys)
+	return keys
+}
+
 // Comparison holds the result of comparing head vs base coverage
 type Comparison struct {
 	Head          *Report

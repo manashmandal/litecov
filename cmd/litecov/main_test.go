@@ -820,6 +820,207 @@ func TestLoadBaseReport_SourcePrefixMatchesHead(t *testing.T) {
 	}
 }
 
+// TestResolveCoverageFiles reproduces issue #89: -coverage-file only ever
+// accepted one literal path, so a comma separated list or a glob pattern --
+// the natural way to name a monorepo's several coverage files, or what a
+// matrix job produces -- errored trying to open the whole string as one
+// filename instead of being expanded into the files it refers to.
+func TestResolveCoverageFiles(t *testing.T) {
+	dir := t.TempDir()
+	pkgA := filepath.Join(dir, "mono", "pkg-a", "coverage.lcov")
+	pkgB := filepath.Join(dir, "mono", "pkg-b", "coverage.lcov")
+	for _, p := range []string{pkgA, pkgB} {
+		if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		if err := os.WriteFile(p, []byte("SF:a.go\nDA:1,1\nend_of_record\n"), 0644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+	}
+	doesNotExist := filepath.Join(dir, "does-not-exist.lcov")
+
+	tests := []struct {
+		name    string
+		pattern string
+		want    []string
+		wantErr bool
+	}{
+		{name: "empty pattern resolves to nothing", pattern: "", want: nil},
+		{name: "single literal path", pattern: pkgA, want: []string{pkgA}},
+		{
+			name:    "comma separated literal paths, whitespace trimmed",
+			pattern: " " + pkgA + " , " + pkgB + " ",
+			want:    []string{pkgA, pkgB},
+		},
+		{
+			name:    "glob expands to every match, from the issue's own repro",
+			pattern: filepath.Join(dir, "mono", "*", "coverage.lcov"),
+			want:    []string{pkgA, pkgB},
+		},
+		{
+			name:    "empty entries between commas are skipped",
+			pattern: pkgA + ",,",
+			want:    []string{pkgA},
+		},
+		{
+			name:    "a path matched twice is kept once, in first-seen order",
+			pattern: pkgA + "," + pkgA,
+			want:    []string{pkgA},
+		},
+		{
+			name:    "nonexistent literal path is kept as-is, not silently dropped",
+			pattern: doesNotExist,
+			want:    []string{doesNotExist},
+		},
+		{
+			name:    "malformed glob pattern is an error",
+			pattern: "[",
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := resolveCoverageFiles(tt.pattern)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("resolveCoverageFiles returned a nil error, want the glob failure reported")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolveCoverageFiles: %v", err)
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("resolveCoverageFiles(%q) = %v, want %v", tt.pattern, got, tt.want)
+			}
+			for i, want := range tt.want {
+				if got[i] != want {
+					t.Errorf("resolveCoverageFiles(%q)[%d] = %q, want %q", tt.pattern, i, got[i], want)
+				}
+			}
+		})
+	}
+}
+
+// TestParseCoverageFile_PerFileSourcePrefix reproduces the other half of
+// issue #89: once -coverage-file can name more than one file, each one
+// must still be parsed with its own path, not a path shared across every
+// match. GetParserWithPath resolves a relative LCOV SF: record against the
+// coverage file's own directory (extractSourcePrefix in
+// internal/parser/detect.go), so two packages that each report on a file
+// named src/a.go need that resolved to two different paths -- collapsing
+// them to one would merge unrelated files' line data together.
+func TestParseCoverageFile_PerFileSourcePrefix(t *testing.T) {
+	dir := t.TempDir()
+	pkgA := filepath.Join(dir, "mono", "pkg-a", "coverage", "lcov.info")
+	pkgB := filepath.Join(dir, "mono", "pkg-b", "coverage", "lcov.info")
+	const lcovSrc = "SF:src/a.go\nDA:1,1\nDA:2,0\nend_of_record\n"
+	for _, p := range []string{pkgA, pkgB} {
+		if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		if err := os.WriteFile(p, []byte(lcovSrc), 0644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+	}
+
+	reportA, err := parseCoverageFile(pkgA, "auto")
+	if err != nil {
+		t.Fatalf("parseCoverageFile(pkgA): %v", err)
+	}
+	reportB, err := parseCoverageFile(pkgB, "auto")
+	if err != nil {
+		t.Fatalf("parseCoverageFile(pkgB): %v", err)
+	}
+
+	if len(reportA.Files) != 1 || len(reportB.Files) != 1 {
+		t.Fatalf("reportA.Files = %d, reportB.Files = %d, want 1 each", len(reportA.Files), len(reportB.Files))
+	}
+
+	wantA := filepath.Join(dir, "mono", "pkg-a", "src", "a.go")
+	wantB := filepath.Join(dir, "mono", "pkg-b", "src", "a.go")
+	if reportA.Files[0].Path != wantA {
+		t.Errorf("reportA path = %q, want %q", reportA.Files[0].Path, wantA)
+	}
+	if reportB.Files[0].Path != wantB {
+		t.Errorf("reportB path = %q, want %q", reportB.Files[0].Path, wantB)
+	}
+}
+
+func TestParseCoverageFile_OpenFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "does-not-exist.lcov")
+	report, err := parseCoverageFile(path, "auto")
+	if err == nil {
+		t.Fatal("parseCoverageFile returned a nil error, want the open failure reported")
+	}
+	if report != nil {
+		t.Errorf("parseCoverageFile returned a non-nil report alongside an error: %v", report)
+	}
+}
+
+// TestCoverageFileGlob_MergesAcrossPackages is issue #89's repro end to
+// end, through the three pieces main wires together: resolveCoverageFiles
+// expanding the glob, parseCoverageFile reading each match with its own
+// source prefix, and coverage.MergeReports combining the results. Before
+// the fix, -coverage-file='mono/*/coverage.lcov' failed to open a literal
+// file with that name, and -coverage-file passed twice silently kept only
+// the second package's report with no warning that the first was dropped.
+func TestCoverageFileGlob_MergesAcrossPackages(t *testing.T) {
+	dir := t.TempDir()
+	pkgA := filepath.Join(dir, "mono", "pkg-a", "coverage", "lcov.info")
+	pkgB := filepath.Join(dir, "mono", "pkg-b", "coverage", "lcov.info")
+	if err := os.MkdirAll(filepath.Dir(pkgA), 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(pkgB), 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	// pkg-a: one file, 4 of 6 lines covered.
+	if err := os.WriteFile(pkgA, []byte("SF:src/a.go\nDA:1,1\nDA:2,1\nDA:3,1\nDA:4,1\nDA:5,0\nDA:6,0\nend_of_record\n"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	// pkg-b: two files, 3 of 7 lines covered each.
+	pkgBContent := "SF:src/b.go\nDA:1,1\nDA:2,1\nDA:3,1\nDA:4,0\nDA:5,0\nDA:6,0\nDA:7,0\nend_of_record\n" +
+		"SF:src/c.go\nDA:1,1\nDA:2,1\nDA:3,1\nDA:4,0\nDA:5,0\nDA:6,0\nDA:7,0\nend_of_record\n"
+	if err := os.WriteFile(pkgB, []byte(pkgBContent), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	pattern := filepath.Join(dir, "mono", "*", "coverage", "lcov.info")
+	files, err := resolveCoverageFiles(pattern)
+	if err != nil {
+		t.Fatalf("resolveCoverageFiles: %v", err)
+	}
+	if len(files) != 2 {
+		t.Fatalf("resolveCoverageFiles matched %d files, want 2: %v", len(files), files)
+	}
+
+	reports := make([]*coverage.Report, 0, len(files))
+	for _, f := range files {
+		r, err := parseCoverageFile(f, "auto")
+		if err != nil {
+			t.Fatalf("parseCoverageFile(%s): %v", f, err)
+		}
+		reports = append(reports, r)
+	}
+
+	merged := coverage.MergeReports(reports)
+
+	if len(merged.Files) != 3 {
+		t.Fatalf("merged.Files length = %d, want 3 (a.go from pkg-a, b.go and c.go from pkg-b)", len(merged.Files))
+	}
+	if merged.TotalCovered != 10 {
+		t.Errorf("TotalCovered = %d, want 10 (4 from pkg-a + 3 + 3 from pkg-b)", merged.TotalCovered)
+	}
+	if merged.TotalLines != 20 {
+		t.Errorf("TotalLines = %d, want 20 (6 from pkg-a + 7 + 7 from pkg-b)", merged.TotalLines)
+	}
+	if merged.Coverage != 50.0 {
+		t.Errorf("Coverage = %v, want 50.0", merged.Coverage)
+	}
+}
+
 // TestWriteGitHubOutput reproduces issue #88's two GITHUB_OUTPUT bugs.
 // os.OpenFile was called without os.O_CREATE, so a GITHUB_OUTPUT file that
 // doesn't already exist failed to open instead of being created, and the

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -20,7 +21,7 @@ import (
 )
 
 func main() {
-	coverageFile := flag.String("coverage-file", "", "Path to coverage report file")
+	coverageFile := flag.String("coverage-file", "", "Path to coverage report file. Accepts a comma separated list and/or glob patterns (e.g. \"mono/*/coverage.lcov\"); every match is parsed and merged into one report")
 	format := flag.String("format", "auto", "Coverage format: auto, lcov, cobertura, go")
 	showFiles := flag.String("show-files", "changed", "Files to show: all, changed, threshold:N, worst:N")
 	threshold := flag.Float64("threshold", 0, "Minimum coverage threshold for passing status")
@@ -116,46 +117,44 @@ func main() {
 		sha = resolveSHA(sha, event)
 	}
 
-	if *coverageFile == "" {
-		*coverageFile = detectCoverageFile()
-		if *coverageFile == "" {
+	coverageFiles, err := resolveCoverageFiles(*coverageFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Invalid -coverage-file: %v\n", err)
+		os.Exit(1)
+	}
+	if len(coverageFiles) == 0 {
+		detected := detectCoverageFile()
+		if detected == "" {
 			fmt.Fprintln(os.Stderr, "No coverage file found. Specify with -coverage-file")
 			os.Exit(1)
 		}
-		fmt.Printf("Auto-detected coverage file: %s\n", *coverageFile)
+		fmt.Printf("Auto-detected coverage file: %s\n", detected)
+		coverageFiles = []string{detected}
 	}
 
-	f, err := os.Open(*coverageFile)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to open coverage file: %v\n", err)
-		os.Exit(1)
-	}
-	defer f.Close()
-
-	var p parser.Parser
-	if *format == "auto" {
-		detected, err := parser.DetectFormat(f)
+	// Each match is parsed on its own -- GetParserWithPath resolves an
+	// LCOV record's relative SF: path against its own coverage file's
+	// directory, so mono/pkg-a/coverage.lcov and mono/pkg-b/coverage.lcov
+	// need their own SourcePrefix rather than sharing one -- and its paths
+	// normalized before the merge, not after: two files whose raw paths
+	// only collide once path-prefix/path-fixes has rewritten them must be
+	// merged as the same file, not left as two report.Files rows with an
+	// identical Path once normalizeReportPaths runs (issue #89).
+	reports := make([]*coverage.Report, 0, len(coverageFiles))
+	for _, path := range coverageFiles {
+		r, err := parseCoverageFile(path, *format)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to detect format: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Failed to load coverage file %s: %v\n", path, err)
 			os.Exit(1)
 		}
-		fmt.Printf("Detected format: %s\n", detected)
-		f.Seek(0, 0)
-		p, _ = parser.GetParserWithPath(detected, *coverageFile)
-	} else {
-		p, err = parser.GetParserWithPath(*format, *coverageFile)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Unknown format: %s\n", *format)
-			os.Exit(1)
-		}
+		normalizeReportPaths(r.Files, *pathPrefix, pathFixRules)
+		fmt.Printf("Loaded coverage file: %s (%.2f%%)\n", path, r.Coverage)
+		reports = append(reports, r)
 	}
-
-	report, err := p.Parse(f)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to parse coverage: %v\n", err)
-		os.Exit(1)
+	report := coverage.MergeReports(reports)
+	if len(coverageFiles) > 1 {
+		fmt.Printf("Merged %d coverage files: %.2f%%\n", len(coverageFiles), report.Coverage)
 	}
-	normalizeReportPaths(report.Files, *pathPrefix, pathFixRules)
 
 	// Written here, right after the report's totals are known, rather than
 	// at the end of main after the comment and commit status calls below.
@@ -707,14 +706,14 @@ func writeGitHubOutput(path string, report *coverage.Report) error {
 
 // loadBaseReport parses the base coverage file at path the same way the head
 // report is parsed: format auto-detected, then handed to a parser built with
-// GetParserWithPath so a relative SF: path picks up a source prefix from
-// path the same way the head parser's does from *coverageFile. Building the
-// base parser with plain GetParser (no path) instead used to leave the base
-// report's paths unprefixed while the head report's carried the coverage
-// file's directory as a prefix, so identical LCOV input produced different
-// paths on each side and NewComparison's lookup missed every file, each one
-// showing up as unmatched on both the head and base side of the comparison
-// (issue #29).
+// GetParserWithPath so a relative SF: path picks up a source prefix from path
+// the same way the head parser's does from its own coverage file's path in
+// parseCoverageFile. Building the base parser with plain GetParser (no path)
+// instead used to leave the base report's paths unprefixed while the head
+// report's carried the coverage file's directory as a prefix, so identical
+// LCOV input produced different paths on each side and NewComparison's lookup
+// missed every file, each one showing up as unmatched on both the head and
+// base side of the comparison (issue #29).
 //
 // Returns (nil, nil) when path is empty: no base comparison was requested.
 // Returns (nil, err) when a base *was* requested but couldn't be turned into
@@ -764,6 +763,49 @@ func loadBaseReport(path, pathPrefix string, fixes []paths.PathFix) (*coverage.R
 	return baseReport, nil
 }
 
+// resolveCoverageFiles expands the -coverage-file flag value into the
+// concrete file paths it refers to, so a monorepo, a multi-language repo,
+// or a matrix job's several coverage files can all be named in one flag
+// value instead of litecov only ever reading the first one (issue #89).
+// pattern is split on commas into entries, and each entry is expanded with
+// filepath.Glob, e.g. "mono/*/coverage.lcov" naturally picks up every
+// package's report. A pattern that isn't a glob and doesn't exist yet --
+// which includes the common case of a single plain path -- makes Glob
+// return zero matches with no error, so that entry is kept as-is rather
+// than silently dropped; parseCoverageFile's os.Open then fails on it with
+// the same "no such file or directory" a typo in -coverage-file has always
+// produced. A path matched by more than one entry (overlapping globs, or
+// the same literal path listed twice) is only kept once, in the order it
+// was first seen, so it isn't parsed and merged into the report twice.
+// Returns (nil, nil) for an empty pattern -- the caller falls back to
+// detectCoverageFile in that case, same as before this flag accepted a
+// list.
+func resolveCoverageFiles(pattern string) ([]string, error) {
+	var files []string
+	seen := make(map[string]bool)
+	for _, entry := range strings.Split(pattern, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		matches, err := filepath.Glob(entry)
+		if err != nil {
+			return nil, fmt.Errorf("%q: %w", entry, err)
+		}
+		if len(matches) == 0 {
+			matches = []string{entry}
+		}
+		for _, m := range matches {
+			if seen[m] {
+				continue
+			}
+			seen[m] = true
+			files = append(files, m)
+		}
+	}
+	return files, nil
+}
+
 func detectCoverageFile() string {
 	candidates := []string{
 		"coverage.lcov",
@@ -780,6 +822,43 @@ func detectCoverageFile() string {
 		}
 	}
 	return ""
+}
+
+// parseCoverageFile opens, format-detects (when format is "auto"), and
+// parses a single coverage file at path. Factored out of what used to be a
+// single block in main running once against *coverageFile so it can run
+// once per file when -coverage-file resolves to more than one (issue #89):
+// GetParserWithPath needs each file's own path to resolve a relative LCOV
+// SF: path against that file's directory, so parsing can't be collapsed
+// into one shared parser call across every input.
+func parseCoverageFile(path, format string) (*coverage.Report, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("opening coverage file: %w", err)
+	}
+	defer f.Close()
+
+	var p parser.Parser
+	if format == "auto" {
+		detected, err := parser.DetectFormat(f)
+		if err != nil {
+			return nil, fmt.Errorf("detecting format: %w", err)
+		}
+		fmt.Printf("Detected format for %s: %s\n", path, detected)
+		f.Seek(0, 0)
+		p, _ = parser.GetParserWithPath(detected, path)
+	} else {
+		p, err = parser.GetParserWithPath(format, path)
+		if err != nil {
+			return nil, fmt.Errorf("unknown format: %s", format)
+		}
+	}
+
+	report, err := p.Parse(f)
+	if err != nil {
+		return nil, fmt.Errorf("parsing coverage: %w", err)
+	}
+	return report, nil
 }
 
 // annotationCap is how many ::warning lines outputAnnotations will print.

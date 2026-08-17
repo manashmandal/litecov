@@ -176,6 +176,164 @@ func TestReport_Misses_ZeroPartialsUnchanged(t *testing.T) {
 	}
 }
 
+// TestMergeReports reproduces issue #89: litecov could only ever be pointed
+// at one coverage file, so a monorepo, a multi-language repo, or a split
+// test suite that produces more than one coverage file per commit had no
+// way to get a single combined report. These cases exercise MergeReports
+// directly, the piece that combines whatever parseCoverageFile
+// (cmd/litecov/main.go) produces once a -coverage-file glob or comma list
+// resolves to more than one file.
+func TestMergeReports(t *testing.T) {
+	tests := []struct {
+		name             string
+		reports          []*Report
+		wantFiles        []FileCoverage
+		wantTotalCovered int
+		wantTotalLines   int
+		wantCoverage     float64
+	}{
+		{
+			name:    "nil slice",
+			reports: nil,
+		},
+		{
+			name:    "nil entries skipped",
+			reports: []*Report{nil, nil},
+		},
+		{
+			name: "single report reproduces its own totals",
+			reports: []*Report{
+				{Files: []FileCoverage{
+					{Path: "a.go", LinesCovered: 3, LinesTotal: 5, CoveredLines: []int{1, 3, 5}, UncoveredLines: []int{2, 4}},
+				}},
+			},
+			wantFiles: []FileCoverage{
+				{Path: "a.go", LinesCovered: 3, LinesTotal: 5, CoveredLines: []int{1, 3, 5}, UncoveredLines: []int{2, 4}},
+			},
+			wantTotalCovered: 3,
+			wantTotalLines:   5,
+			wantCoverage:     60.0,
+		},
+		{
+			// The issue's own repro: two LCOV files under different mono
+			// packages, each with their own files, merged into one report
+			// instead of the second silently replacing the first.
+			name: "disjoint files across two reports are concatenated",
+			reports: []*Report{
+				{Files: []FileCoverage{
+					{Path: "mono/pkg-a/a.go", LinesCovered: 2, LinesTotal: 3, CoveredLines: []int{1, 2}, UncoveredLines: []int{3}},
+				}},
+				{Files: []FileCoverage{
+					{Path: "mono/pkg-b/b.go", LinesCovered: 4, LinesTotal: 6, CoveredLines: []int{1, 2, 3, 4}, UncoveredLines: []int{5, 6}},
+				}},
+			},
+			wantFiles: []FileCoverage{
+				{Path: "mono/pkg-a/a.go", LinesCovered: 2, LinesTotal: 3, CoveredLines: []int{1, 2}, UncoveredLines: []int{3}},
+				{Path: "mono/pkg-b/b.go", LinesCovered: 4, LinesTotal: 6, CoveredLines: []int{1, 2, 3, 4}, UncoveredLines: []int{5, 6}},
+			},
+			wantTotalCovered: 6,
+			wantTotalLines:   9,
+			wantCoverage:     float64(6) / float64(9) * 100,
+		},
+		{
+			name: "same path merges as a line union, overlap favors covered",
+			reports: []*Report{
+				{Files: []FileCoverage{
+					{Path: "shared.go", LinesCovered: 2, LinesTotal: 5, CoveredLines: []int{1, 3}, UncoveredLines: []int{2, 4, 5}},
+				}},
+				{Files: []FileCoverage{
+					// Lines 2 and 5 ran here even though the first report
+					// never exercised them; line 6 is new to this report.
+					{Path: "shared.go", LinesCovered: 2, LinesTotal: 3, CoveredLines: []int{2, 5}, UncoveredLines: []int{6}},
+				}},
+			},
+			wantFiles: []FileCoverage{
+				{Path: "shared.go", LinesCovered: 4, LinesTotal: 6, CoveredLines: []int{1, 2, 3, 5}, UncoveredLines: []int{4, 6}},
+			},
+			wantTotalCovered: 4,
+			wantTotalLines:   6,
+			wantCoverage:     float64(4) / float64(6) * 100,
+		},
+		{
+			name: "file order follows first appearance across reports",
+			reports: []*Report{
+				{Files: []FileCoverage{
+					{Path: "x.go", LinesCovered: 1, LinesTotal: 1, CoveredLines: []int{1}},
+					{Path: "y.go", LinesCovered: 1, LinesTotal: 1, CoveredLines: []int{1}},
+				}},
+				{Files: []FileCoverage{
+					{Path: "y.go", LinesCovered: 1, LinesTotal: 2, CoveredLines: []int{1}, UncoveredLines: []int{2}},
+					{Path: "z.go", LinesCovered: 1, LinesTotal: 1, CoveredLines: []int{1}},
+				}},
+			},
+			wantFiles: []FileCoverage{
+				{Path: "x.go", LinesCovered: 1, LinesTotal: 1, CoveredLines: []int{1}},
+				{Path: "y.go", LinesCovered: 1, LinesTotal: 2, CoveredLines: []int{1}, UncoveredLines: []int{2}},
+				{Path: "z.go", LinesCovered: 1, LinesTotal: 1, CoveredLines: []int{1}},
+			},
+			wantTotalCovered: 3,
+			wantTotalLines:   4,
+			wantCoverage:     75.0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			merged := MergeReports(tt.reports)
+			if merged == nil {
+				t.Fatal("MergeReports returned nil")
+			}
+
+			if len(merged.Files) != len(tt.wantFiles) {
+				t.Fatalf("Files length = %d, want %d (%+v)", len(merged.Files), len(tt.wantFiles), merged.Files)
+			}
+			for i, want := range tt.wantFiles {
+				got := merged.Files[i]
+				if got.Path != want.Path {
+					t.Errorf("Files[%d].Path = %q, want %q", i, got.Path, want.Path)
+				}
+				if got.LinesCovered != want.LinesCovered {
+					t.Errorf("Files[%d] (%s).LinesCovered = %d, want %d", i, want.Path, got.LinesCovered, want.LinesCovered)
+				}
+				if got.LinesTotal != want.LinesTotal {
+					t.Errorf("Files[%d] (%s).LinesTotal = %d, want %d", i, want.Path, got.LinesTotal, want.LinesTotal)
+				}
+				if !equalIntSlices(got.CoveredLines, want.CoveredLines) {
+					t.Errorf("Files[%d] (%s).CoveredLines = %v, want %v", i, want.Path, got.CoveredLines, want.CoveredLines)
+				}
+				if !equalIntSlices(got.UncoveredLines, want.UncoveredLines) {
+					t.Errorf("Files[%d] (%s).UncoveredLines = %v, want %v", i, want.Path, got.UncoveredLines, want.UncoveredLines)
+				}
+			}
+
+			if merged.TotalCovered != tt.wantTotalCovered {
+				t.Errorf("TotalCovered = %d, want %d", merged.TotalCovered, tt.wantTotalCovered)
+			}
+			if merged.TotalLines != tt.wantTotalLines {
+				t.Errorf("TotalLines = %d, want %d", merged.TotalLines, tt.wantTotalLines)
+			}
+			if merged.Coverage != tt.wantCoverage {
+				t.Errorf("Coverage = %v, want %v", merged.Coverage, tt.wantCoverage)
+			}
+		})
+	}
+}
+
+// equalIntSlices compares two possibly-nil []int slices for equal contents
+// in the same order. A nil and an empty slice both mean "no lines" to every
+// caller in this package, so they're treated as equal here too.
+func equalIntSlices(a, b []int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func TestNewComparison_NilHead(t *testing.T) {
 	comp := NewComparison(nil, nil, nil, nil, nil)
 
