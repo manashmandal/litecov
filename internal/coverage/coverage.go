@@ -61,7 +61,7 @@ type FileChange struct {
 	BaseCoverage float64
 	Delta        float64
 	IsNew        bool
-	NoCoverage   bool // True if file has no coverage data (completely untested)
+	NoCoverage   bool // True if the file is absent from the coverage report entirely: coverage is unknown, not 0%
 	NoStatements bool // True if the file has no coverable lines (LinesTotal == 0): coverage is undefined, not 0%
 }
 
@@ -140,7 +140,10 @@ func NewComparison(head, base *Report, changedFiles []string) *Comparison {
 		comp.FileChanges = append(comp.FileChanges, fc)
 	}
 
-	// Add changed files that are missing from coverage (0% coverage)
+	// Add changed files that have no entry in the coverage report at all.
+	// HeadCoverage is left at its zero value as a sentinel, same as
+	// NoStatements above; NoCoverage is what callers must check before
+	// treating it as a real 0% measurement (issue #34).
 	if filterByChanged {
 		for _, changedFile := range changedFiles {
 			if coveredChangedFiles[changedFile] {

@@ -1171,6 +1171,34 @@ func TestFormatImpactedFilesWithDelta_NoStatements(t *testing.T) {
 	}
 }
 
+func TestFormatImpactedFilesWithDelta_NoCoverage(t *testing.T) {
+	// A changed file absent from the coverage report is not a measured 0%:
+	// it could be genuinely untested, excluded from instrumentation, or
+	// simply not built by the job that produced the report. Before this,
+	// HeadCoverage's fallback-to-0 rendered a flat `0.00%` with a failing
+	// ❌ and a delta column asserting "no tests", none of which the tool
+	// actually knows. See issue #34.
+	fileChanges := []coverage.FileChange{
+		{Path: "internal/bar/b.go", HeadCoverage: 0, BaseCoverage: 0, Delta: 0, IsNew: true, NoCoverage: true},
+		{Path: "src/a.py", HeadCoverage: 100, BaseCoverage: 100, Delta: 0},
+	}
+
+	result := formatImpactedFilesWithDelta(fileChanges, Options{})
+
+	if strings.Contains(result, "`0.00%`") {
+		t.Error("a file missing from the coverage report should not render as a flat 0.00%")
+	}
+	if strings.Contains(result, "❌") {
+		t.Error("a file missing from the coverage report should get a neutral status, not ❌")
+	}
+	if strings.Contains(result, "no tests") {
+		t.Error("absence from the report should not be asserted as \"no tests\"")
+	}
+	if !strings.Contains(result, "❓") {
+		t.Error("missing neutral unknown status for a file absent from the coverage report")
+	}
+}
+
 func TestFormatImpactedFilesWithDelta_Empty(t *testing.T) {
 	result := formatImpactedFilesWithDelta(nil, Options{})
 	if result != "" {
@@ -1203,6 +1231,13 @@ func TestFormatFileDelta(t *testing.T) {
 			name:     "negative delta",
 			fc:       coverage.FileChange{IsNew: false, Delta: -3.50},
 			expected: "`-3.50%`",
+		},
+		{
+			// issue #34: absence from the report is unknown, not a delta to
+			// zero, and takes priority over IsNew.
+			name:     "no coverage data",
+			fc:       coverage.FileChange{IsNew: true, NoCoverage: true, Delta: 0},
+			expected: "`unknown`",
 		},
 	}
 

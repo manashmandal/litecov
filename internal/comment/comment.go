@@ -318,6 +318,17 @@ func formatImpactedFilesWithDelta(fileChanges []coverage.FileChange, opts Option
 			coverageStr = "`no statements`"
 			emoji = "➖"
 		}
+		// A file absent from the coverage report has nothing to measure
+		// either: HeadCoverage falls back to 0 the same way, which would
+		// otherwise render identically to a file whose statements were all
+		// missed. Absence has several causes besides "untested": excluded
+		// from instrumentation, not built by the job that produced the
+		// report, a path that never matched. Render it as unknown rather
+		// than asserting a failing grade (issue #34).
+		if fc.NoCoverage {
+			coverageStr = "`no coverage data`"
+			emoji = "❓"
+		}
 		sb.WriteString(fmt.Sprintf("| %s | %s | %s | %s |\n", fileName, coverageStr, deltaStr, emoji))
 	}
 
@@ -328,7 +339,7 @@ func formatImpactedFilesWithDelta(fileChanges []coverage.FileChange, opts Option
 
 func formatFileDelta(fc coverage.FileChange) string {
 	if fc.NoCoverage {
-		return "`⚠️ no tests`"
+		return "`unknown`"
 	}
 	if fc.IsNew {
 		return "`new`"
