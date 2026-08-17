@@ -688,6 +688,14 @@ func TestFormatRange_NormalizesAndEscapesPath(t *testing.T) {
 			filePath: "src/my file.go",
 			expected: "[L9](https://github.com/user/repo/blob/abc123/src/my%20file.go#L9)",
 		},
+		{
+			// issue #28: same requirement as formatFileName -- a literal '%'
+			// in the filename must itself be escaped to %25, not passed
+			// through and misread as the start of an existing escape.
+			name:     "percent sign in filename is percent-escaped",
+			filePath: "src/percent%20.go",
+			expected: "[L9](https://github.com/user/repo/blob/abc123/src/percent%2520.go#L9)",
+		},
 	}
 
 	for _, tt := range tests {
@@ -1068,6 +1076,15 @@ func TestFormatFileName_NormalizesAndEscapesPath(t *testing.T) {
 			path:     "src/my file #2.go",
 			opts:     opts,
 			expected: "[`src/my file #2.go`](https://github.com/user/repo/blob/abc123/src/my%20file%20%232.go)",
+		},
+		{
+			// issue #28: a literal '%' in the filename must itself be
+			// percent-escaped (to %25) rather than passed through, or GitHub
+			// decodes it back into a character that was never in the path.
+			name:     "percent sign in filename is percent-escaped, not left to be misread as an escape",
+			path:     "src/percent%20.go",
+			opts:     opts,
+			expected: "[`src/percent%20.go`](https://github.com/user/repo/blob/abc123/src/percent%2520.go)",
 		},
 	}
 
