@@ -36,9 +36,9 @@ type Options struct {
 	// intersected with the report's covered/uncovered line data. Its zero
 	// value (Total == 0) means no patch data was available -- not a PR
 	// build, the changed-files fetch failed, or the diff touched no
-	// coverable line -- and formatPatchString leaves the summary line's
-	// Patch segment out entirely in that case instead of claiming a 0%
-	// that was never measured (issue #6).
+	// coverable line -- and formatPatchStatusLine leaves the Patch status
+	// line out of the headline entirely in that case instead of claiming a
+	// 0% that was never measured (issue #6).
 	PatchCoverage coverage.PatchCoverage
 	// FilePatches is PatchCoverage's per-file breakdown, computed by
 	// coverage.CalculateFilePatchCoverage and keyed by the same Path a
@@ -130,6 +130,7 @@ func FormatWithComparison(comp *coverage.Comparison, opts Options) string {
 	sb.WriteString("\n")
 
 	sb.WriteString(formatHeader(opts))
+	sb.WriteString(formatBaseMissingWarning(comp))
 	sb.WriteString(formatQuickSummaryWithDelta(comp, opts))
 	sb.WriteString(formatImpactedFilesWithDelta(comp.FileChanges, opts))
 	// Collapsed and last, same ordering as Format (issue #21).
@@ -161,34 +162,140 @@ func formatBaseError(opts Options) string {
 		opts.BaseError)
 }
 
-func formatQuickSummary(report *coverage.Report, opts Options) string {
-	emoji := getStatusEmoji(report.Coverage)
-	return fmt.Sprintf("> %s **Coverage:** `%.2f%%`%s | **Lines:** `%d/%d` | **Files:** `%d`\n\n",
-		emoji, report.Coverage, formatPatchString(opts.PatchCoverage), report.TotalCovered, report.TotalLines, len(report.Files))
+// formatBaseMissingWarning renders a note when a base comparison was
+// configured and the base coverage file parsed without error but produced
+// zero files to compare against (coverage.Comparison.NoBaseFiles: a
+// truncated LCOV, a Cobertura with no packages, issue #32). Without this,
+// FormatWithComparison silently fell back to head-only numbers with nothing
+// in the comment telling the reader why no delta appeared -- the same gap
+// formatBaseError closes for a base file that couldn't be read at all
+// (issue #39), just for the read-fine-but-empty case instead (issue #77).
+func formatBaseMissingWarning(comp *coverage.Comparison) string {
+	if !comp.NoBaseFiles {
+		return ""
+	}
+	return "> ⚠️ **Base report missing:** the configured base coverage has no files to compare against. Showing head coverage only, no comparison.\n\n"
 }
 
+// formatQuickSummary renders the status headline for a report with no base
+// comparison: a Patch status line when patch data is available, then a
+// Project status line, matching Codecov's own layout of one plain-sentence
+// check per line instead of every number crammed into a single blockquote
+// (issue #77).
+func formatQuickSummary(report *coverage.Report, opts Options) string {
+	var sb strings.Builder
+
+	sb.WriteString(formatPatchStatusLine(opts.PatchCoverage))
+
+	emoji := getStatusEmoji(report.Coverage)
+	sb.WriteString(fmt.Sprintf("> %s Project coverage is `%.2f%%`.%s\n",
+		emoji, report.Coverage, formatComparingClause(false, opts)))
+	sb.WriteString(fmt.Sprintf("> **Lines:** `%d/%d` | **Files:** `%d`\n\n",
+		report.TotalCovered, report.TotalLines, len(report.Files)))
+
+	return sb.String()
+}
+
+// formatQuickSummaryWithDelta is formatQuickSummary's comparison-path
+// counterpart: the same Patch and Project status lines, with the Project
+// line also carrying the coverage delta and, when opts.SHA is known, which
+// base and head are actually being compared (issue #77).
 func formatQuickSummaryWithDelta(comp *coverage.Comparison, opts Options) string {
+	var sb strings.Builder
+
+	sb.WriteString(formatPatchStatusLine(opts.PatchCoverage))
+
 	emoji := getStatusEmoji(comp.Head.Coverage)
 	// A present-but-empty base report leaves nothing to diff against, same
 	// as no base report at all: showing CoverageDelta here would claim an
 	// improvement over a measurement that was never taken (issue #32).
-	delta := formatDeltaString(comp.CoverageDelta, comp.Base != nil && !comp.NoBaseFiles)
-	return fmt.Sprintf("> %s **Coverage:** `%.2f%%`%s%s | **Lines:** `%d/%d` | **Files:** `%d`\n\n",
-		emoji, comp.Head.Coverage, delta, formatPatchString(opts.PatchCoverage), comp.Head.TotalCovered, comp.Head.TotalLines, len(comp.Head.Files))
+	hasBase := comp.Base != nil && !comp.NoBaseFiles
+	delta := formatDeltaString(comp.CoverageDelta, hasBase)
+	sb.WriteString(fmt.Sprintf("> %s Project coverage is `%.2f%%`%s.%s\n",
+		emoji, comp.Head.Coverage, delta, formatComparingClause(hasBase, opts)))
+	sb.WriteString(fmt.Sprintf("> **Lines:** `%d/%d` | **Files:** `%d`\n\n",
+		comp.Head.TotalCovered, comp.Head.TotalLines, len(comp.Head.Files)))
+
+	return sb.String()
 }
 
-// formatPatchString renders the summary line's Patch segment: the coverage
-// percentage of only the lines this PR added, Codecov's headline number for
-// a PR comment (https://docs.codecov.com/docs/coverage-percentages). Empty
-// when patch.Total is 0 -- no PR diff was available, or the diff touched no
+// formatPatchStatusLine renders the status headline's Patch line: Codecov's
+// headline check for a PR comment
+// (https://docs.codecov.com/docs/coverage-percentages), its own status line
+// with a pass/fail glyph instead of a "| **Patch:** X%" segment folded into
+// the Coverage line (issue #77). All-covered gets Codecov's own success
+// wording verbatim; anything short of that names how many lines are
+// missing, the number a reviewer needs to go find them. Empty when
+// patch.Total is 0 -- no PR diff was available, or the diff touched no
 // coverable line -- so the summary doesn't claim a measurement that was
 // never taken, the same reasoning formatDeltaString applies to a missing
 // base (issue #6).
-func formatPatchString(patch coverage.PatchCoverage) string {
+func formatPatchStatusLine(patch coverage.PatchCoverage) string {
 	if patch.Total == 0 {
 		return ""
 	}
-	return fmt.Sprintf(" | **Patch:** `%.2f%%`", patch.Percentage())
+	if patch.Covered == patch.Total {
+		return "> ✅ All modified and coverable lines are covered by tests.\n"
+	}
+	missing := patch.Total - patch.Covered
+	unit := "lines"
+	if missing == 1 {
+		unit = "line"
+	}
+	return fmt.Sprintf("> ❌ Patch coverage is `%.2f%%` with `%d %s` in your changes missing coverage. Please review.\n",
+		patch.Percentage(), missing, unit)
+}
+
+// formatComparingClause renders the Project status line's commit reference:
+// which head commit the report measures and, once a real base comparison is
+// active, what it's being compared against (issue #77). Empty when
+// opts.SHA is unset -- a local run or a test comment has no commit to point
+// at, and "head ()" would link to nothing.
+//
+// The base side names a branch, not a commit: LiteCov has no mechanism to
+// learn which commit a configured base-coverage-file was actually generated
+// from (that gap belongs to issue #24, obtaining a base report at all), so
+// claiming a specific base commit here would assert a fact nothing verifies.
+func formatComparingClause(hasBase bool, opts Options) string {
+	if opts.SHA == "" {
+		return ""
+	}
+	head := formatCommitLink(opts.SHA, opts.RepoURL)
+	if !hasBase {
+		return fmt.Sprintf(" Head commit: %s.", head)
+	}
+	baseBranch := opts.BaseBranch
+	if baseBranch == "" {
+		// Same "BASE" fallback formatCoverageDiffWithComparison uses when
+		// nothing supplied a real branch name (issue #75).
+		baseBranch = "BASE"
+	}
+	return fmt.Sprintf(" Comparing base (%s) to head (%s).", formatBranchLink(baseBranch, opts.RepoURL), head)
+}
+
+// formatCommitLink renders a short, linked reference to sha, the same
+// short-sha-in-backticks convention Codecov's own comparison line uses
+// (https://docs.codecov.com/docs/comparing-commits). Linked to the commit's
+// page on GitHub when a repo URL is configured, unlinked otherwise, the same
+// fallback formatFileName and formatRange use for their own links.
+func formatCommitLink(sha, repoURL string) string {
+	short := sha
+	if len(short) > 7 {
+		short = short[:7]
+	}
+	if repoURL == "" {
+		return fmt.Sprintf("`%s`", short)
+	}
+	return fmt.Sprintf("[`%s`](%s/commit/%s)", short, repoURL, sha)
+}
+
+// formatBranchLink is formatCommitLink's counterpart for a branch name,
+// linked to the branch's tree on GitHub when a repo URL is configured.
+func formatBranchLink(branch, repoURL string) string {
+	if repoURL == "" {
+		return fmt.Sprintf("`%s`", branch)
+	}
+	return fmt.Sprintf("[`%s`](%s/tree/%s)", branch, repoURL, url.PathEscape(branch))
 }
 
 func formatDeltaString(delta float64, hasBase bool) string {

@@ -27,7 +27,7 @@ func TestFormat(t *testing.T) {
 
 	checks := []string{
 		"Coverage Report",
-		"57.50%",
+		"Project coverage is `57.50%`.", // issue #77: a status line, not a "**Coverage:**" segment
 		"115/200",
 		"src/parser.go",
 		"src/utils.go",
@@ -824,6 +824,31 @@ func TestFormatBaseError(t *testing.T) {
 	})
 }
 
+// TestFormatBaseMissingWarning reproduces issue #77's staleness-adjacent
+// complaint for the one case LiteCov can actually detect: a base report
+// that parsed fine but came back with no files (issue #32's NoBaseFiles).
+// Before this, FormatWithComparison fell back to head-only numbers with
+// nothing explaining why no delta showed up.
+func TestFormatBaseMissingWarning(t *testing.T) {
+	t.Run("empty when base has files", func(t *testing.T) {
+		comp := &coverage.Comparison{NoBaseFiles: false}
+		if result := formatBaseMissingWarning(comp); result != "" {
+			t.Errorf("formatBaseMissingWarning with NoBaseFiles false = %q, want empty", result)
+		}
+	})
+
+	t.Run("warns when the base report has no files", func(t *testing.T) {
+		comp := &coverage.Comparison{NoBaseFiles: true}
+		result := formatBaseMissingWarning(comp)
+		if !strings.Contains(result, "Base report missing") {
+			t.Errorf("missing base-report-missing warning in %q", result)
+		}
+		if !strings.Contains(result, "no files to compare against") {
+			t.Errorf("missing explanation in %q", result)
+		}
+	})
+}
+
 func TestFormatQuickSummary(t *testing.T) {
 	report := &coverage.Report{
 		TotalCovered: 850,
@@ -852,9 +877,10 @@ func TestFormatQuickSummary(t *testing.T) {
 }
 
 func TestFormatQuickSummary_WithPatchCoverage(t *testing.T) {
-	// issue #6: the summary line's Patch segment shows the coverage of only
-	// the lines the PR added, not the whole-project number formatQuickSummary
-	// already prints.
+	// issue #6: the Patch status line shows the coverage of only the lines
+	// the PR added, not the whole-project number the Project line already
+	// prints. issue #77: it's its own status line with a pass/fail glyph,
+	// not a segment folded into the Coverage line.
 	report := &coverage.Report{
 		TotalCovered: 850,
 		TotalLines:   1000,
@@ -865,8 +891,62 @@ func TestFormatQuickSummary_WithPatchCoverage(t *testing.T) {
 
 	result := formatQuickSummary(report, opts)
 
-	if !strings.Contains(result, "**Patch:** `85.00%`") {
-		t.Errorf("missing patch coverage segment in %q", result)
+	if !strings.Contains(result, "❌ Patch coverage is `85.00%` with `3 lines` in your changes missing coverage.") {
+		t.Errorf("missing patch coverage status line in %q", result)
+	}
+}
+
+// TestFormatQuickSummary_PatchFullyCovered reproduces issue #77's other
+// Patch status: when every line the PR added is covered, the status line
+// reads Codecov's own success sentence instead of a percentage, the same
+// wording used when patch.Percentage() would print 100.00% anyway.
+func TestFormatQuickSummary_PatchFullyCovered(t *testing.T) {
+	report := &coverage.Report{TotalCovered: 850, TotalLines: 1000, Coverage: 85.0}
+	opts := Options{PatchCoverage: coverage.PatchCoverage{Covered: 20, Total: 20}}
+
+	result := formatQuickSummary(report, opts)
+
+	if !strings.Contains(result, "✅ All modified and coverable lines are covered by tests.") {
+		t.Errorf("missing patch success line in %q", result)
+	}
+	if strings.Contains(result, "missing coverage") {
+		t.Errorf("should not report missing coverage when patch is fully covered: %q", result)
+	}
+}
+
+// TestFormatQuickSummary_StatusHeadlineIsMultipleLines reproduces the
+// central issue #77 repro: the old summary was one blockquote line with
+// every number crammed into it. The Patch and Project checks must render as
+// separate lines, matching Codecov's own layout, not one line joined with
+// "|".
+func TestFormatQuickSummary_StatusHeadlineIsMultipleLines(t *testing.T) {
+	report := &coverage.Report{TotalCovered: 850, TotalLines: 1000, Coverage: 85.0}
+	opts := Options{PatchCoverage: coverage.PatchCoverage{Covered: 17, Total: 20}}
+
+	result := formatQuickSummary(report, opts)
+
+	patchIdx := strings.Index(result, "Patch coverage")
+	projectIdx := strings.Index(result, "Project coverage")
+	if patchIdx == -1 || projectIdx == -1 {
+		t.Fatalf("missing Patch or Project line in %q", result)
+	}
+	patchLine := result[:strings.Index(result, "\n")]
+	if strings.Contains(patchLine, "Project coverage") {
+		t.Errorf("Patch and Project must be on separate lines, got %q", patchLine)
+	}
+}
+
+// TestFormatQuickSummary_HeadCommit reproduces issue #77: the summary named
+// no commit at all, so a reviewer couldn't tell which commit a report with
+// no base comparison actually measured.
+func TestFormatQuickSummary_HeadCommit(t *testing.T) {
+	report := &coverage.Report{TotalCovered: 80, TotalLines: 100, Coverage: 80.0}
+	opts := Options{SHA: "abc1234def5678901234567890123456789abcd", RepoURL: "https://github.com/o/r"}
+
+	result := formatQuickSummary(report, opts)
+
+	if !strings.Contains(result, "Head commit: [`abc1234`](https://github.com/o/r/commit/abc1234def5678901234567890123456789abcd).") {
+		t.Errorf("missing linked head commit reference in %q", result)
 	}
 }
 
@@ -1404,6 +1484,8 @@ func TestFormatWithComparison(t *testing.T) {
 		Title:      "PR Coverage",
 		PRNumber:   123,
 		BaseBranch: "main",
+		SHA:        "1234567890abcdef1234567890abcdef12345678",
+		RepoURL:    "https://github.com/o/r",
 	}
 
 	result := FormatWithComparison(comp, opts)
@@ -1412,8 +1494,10 @@ func TestFormatWithComparison(t *testing.T) {
 		Marker,
 		"PR Coverage",
 		"logo.png",
-		"72.50%",
-		"(-2.50%)",
+		"Project coverage is `72.50%` (-2.50%).", // issue #77: a status line, not a "**Coverage:**" segment
+		// issue #77: the Project line names what's being compared, base
+		// branch and head commit, each linked to its own page.
+		"Comparing base ([`main`](https://github.com/o/r/tree/main)) to head ([`1234567`](https://github.com/o/r/commit/1234567890abcdef1234567890abcdef12345678)).",
 		"Coverage Diff",
 		"main",
 		"#123",
@@ -1528,6 +1612,11 @@ func TestFormatWithComparison_EmptyBase(t *testing.T) {
 	}
 	if strings.Contains(result, "+85.00%") {
 		t.Error("should not report head coverage as an 85-point improvement over an empty base report")
+	}
+	// issue #77: an empty base report used to fail silently into head-only
+	// numbers with no explanation anywhere in the comment.
+	if !strings.Contains(result, "Base report missing") {
+		t.Error("missing warning explaining why no comparison is shown")
 	}
 }
 
@@ -1658,7 +1747,49 @@ func TestFormatQuickSummaryWithDelta(t *testing.T) {
 				CoverageDelta: 5.0,
 			},
 			opts:     Options{PatchCoverage: coverage.PatchCoverage{Covered: 9, Total: 10}},
-			contains: []string{"85.00%", "(+5.00%)", "**Patch:** `90.00%`"},
+			contains: []string{"85.00%", "(+5.00%)", "Patch coverage is `90.00%` with `1 line` in your changes missing coverage."},
+		},
+		{
+			// issue #77: the Project line names what's actually being
+			// compared once opts.SHA is known -- the base branch and the
+			// head commit, each linked to its own page.
+			name: "comparing base and head when SHA is known",
+			comp: &coverage.Comparison{
+				Head: &coverage.Report{
+					TotalCovered: 72,
+					TotalLines:   100,
+					Coverage:     72.0,
+					Files:        make([]coverage.FileCoverage, 2),
+				},
+				Base:          &coverage.Report{Coverage: 75.0},
+				CoverageDelta: -3.0,
+			},
+			opts: Options{
+				SHA:        "1234567890abcdef1234567890abcdef12345678",
+				RepoURL:    "https://github.com/o/r",
+				BaseBranch: "main",
+			},
+			contains: []string{
+				"Comparing base ([`main`](https://github.com/o/r/tree/main)) to head ([`1234567`](https://github.com/o/r/commit/1234567890abcdef1234567890abcdef12345678)).",
+			},
+		},
+		{
+			// No base to compare against, but a commit is still known: the
+			// line names the head commit instead of claiming a comparison
+			// that isn't happening.
+			name: "no base but SHA known names the head commit",
+			comp: &coverage.Comparison{
+				Head: &coverage.Report{
+					TotalCovered: 80,
+					TotalLines:   100,
+					Coverage:     80.0,
+					Files:        make([]coverage.FileCoverage, 5),
+				},
+				Base: nil,
+			},
+			opts:     Options{SHA: "1234567890abcdef1234567890abcdef12345678"},
+			contains: []string{"Head commit: `1234567`."},
+			excludes: []string{"Comparing base"},
 		},
 		{
 			// A patch total of 0 means no patch data was available, not a

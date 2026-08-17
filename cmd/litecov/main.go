@@ -292,7 +292,7 @@ func commitStatusForCoverage(coverage, threshold float64) (state, description st
 // patch.Total == 0 means there was nothing to measure -- no PR diff was
 // available, or the diff touched no coverable line -- so this reports
 // success rather than a 0% that was never actually computed, the same
-// sentinel formatPatchString applies to the PR comment (issue #6).
+// sentinel formatPatchStatusLine applies to the PR comment (issue #6).
 // threshold <= 0 means patch-threshold wasn't configured, so a measured
 // patch is always "success" too.
 func commitStatusForPatchCoverage(patch coverage.PatchCoverage, threshold float64) (state, description string) {
