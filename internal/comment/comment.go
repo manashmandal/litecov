@@ -214,18 +214,83 @@ func roundToDisplayPrecision(delta float64) float64 {
 	return math.Round(delta*100) / 100
 }
 
+// diffLabelWidth is the width of a Coverage Diff/Summary row's label
+// column: a 1-character +/- prefix, a space, then the widest of the five
+// metric names ("Coverage") left-justified. The value columns that follow
+// can't be a constant like this one -- they have to size themselves to
+// whatever numbers a given report produced -- but the label set is fixed,
+// so its width is (issue #45).
+const diffLabelWidth = len("Coverage") + 2
+
+// diffColumnWidth returns the width to give every numeric column in a
+// Coverage Diff/Summary block: the longest value string that will actually
+// render, plus a fixed gutter. Codecov sizes every column in the block off
+// the same number -- base, head, delta, whichever metric -- instead of
+// tuning each row by hand, which is what let Files, Lines, Hits and Misses
+// end up on four different grids before this (issue #45). An empty string,
+// which formatIntDelta returns for an unmoved row, doesn't affect the
+// width.
+func diffColumnWidth(values ...string) int {
+	const gutter = 3 // matches the 3-space gutter in Codecov's own comment
+	width := 0
+	for _, v := range values {
+		width = max(width, len(v))
+	}
+	return width + gutter
+}
+
+// diffRow3 renders one three-column Coverage Diff row: a +/- prefix, the
+// label, then base, head and delta each right-justified to colWidth. Every
+// row in a block is built through this with the same colWidth, so they
+// land on one shared grid instead of each picking its own (issue #45).
+func diffRow3(prefix, label string, colWidth int, base, head, delta string) string {
+	return fmt.Sprintf("%s %-*s%*s%*s%*s\n", prefix, diffLabelWidth-2, label, colWidth, base, colWidth, head, colWidth, delta)
+}
+
+// diffRow1 is diffRow3's single-column counterpart, for a report with
+// nothing to compare against.
+func diffRow1(label string, colWidth int, value string) string {
+	return fmt.Sprintf("  %-*s%*s\n", diffLabelWidth-2, label, colWidth, value)
+}
+
+// diffTitleLine centers title inside a "@@ ... @@" banner totalWidth
+// characters wide, so it lines up with the ==== separator below it and the
+// row grid below that instead of the three disagreeing on how wide the
+// block is (issue #45). Callers keep totalWidth at least len(title)+6 so
+// there's always at least one space of padding on each side.
+func diffTitleLine(title string, totalWidth int) string {
+	pad := totalWidth - 4 - len(title) // 4 chars for the two "@@" markers
+	if pad < 0 {
+		pad = 0
+	}
+	left := pad / 2
+	return fmt.Sprintf("@@%s%s%s@@\n", strings.Repeat(" ", left), title, strings.Repeat(" ", pad-left))
+}
+
 func formatCoverageDiff(report *coverage.Report) string {
 	var sb strings.Builder
 
 	sb.WriteString("<details>\n")
 	sb.WriteString("<summary>Additional details and impacted files</summary>\n\n")
 	sb.WriteString("```diff\n")
-	sb.WriteString("@@         Coverage Summary            @@\n")
-	sb.WriteString("==========================================\n")
-	sb.WriteString(fmt.Sprintf("  Coverage              %.2f%%\n", report.Coverage))
-	sb.WriteString(fmt.Sprintf("  Lines           %d/%d\n", report.TotalCovered, report.TotalLines))
-	sb.WriteString(fmt.Sprintf("  Files                   %d\n", len(report.Files)))
-	sb.WriteString("==========================================\n")
+
+	coverageStr := fmt.Sprintf("%.2f%%", report.Coverage)
+	linesStr := fmt.Sprintf("%d/%d", report.TotalCovered, report.TotalLines)
+	filesStr := fmt.Sprintf("%d", len(report.Files))
+
+	// One column width for the whole block, sized to the widest of the
+	// three values instead of the hand-picked padding each row used to
+	// carry on its own -- the same misalignment formatCoverageDiffWithComparison
+	// had (issue #45).
+	colWidth := diffColumnWidth(coverageStr, linesStr, filesStr)
+	totalWidth := max(diffLabelWidth+colWidth, len("Coverage Summary")+6)
+
+	sb.WriteString(diffTitleLine("Coverage Summary", totalWidth))
+	sb.WriteString(strings.Repeat("=", totalWidth) + "\n")
+	sb.WriteString(diffRow1("Coverage", colWidth, coverageStr))
+	sb.WriteString(diffRow1("Lines", colWidth, linesStr))
+	sb.WriteString(diffRow1("Files", colWidth, filesStr))
+	sb.WriteString(strings.Repeat("=", totalWidth) + "\n")
 	sb.WriteString("```\n\n")
 	sb.WriteString("</details>\n\n")
 
@@ -248,75 +313,112 @@ func formatCoverageDiffWithComparison(comp *coverage.Comparison, opts Options) s
 		prRef = "HEAD"
 	}
 
-	sb.WriteString("@@              Coverage Diff              @@\n")
-	sb.WriteString(fmt.Sprintf("##           %8s   %8s     +/-   ##\n", baseBranch, prRef))
-	sb.WriteString("=============================================\n")
-
 	// A present-but-empty base report (NoBaseFiles) is treated the same as
 	// no base report at all: falling into the single-column branch below
 	// avoids presenting comp.Base.Coverage's 0 fallback as a real
 	// measurement (issue #32).
-	if comp.Base != nil && !comp.NoBaseFiles {
+	hasBase := comp.Base != nil && !comp.NoBaseFiles
+
+	headCoverage := fmt.Sprintf("%.2f%%", comp.Head.Coverage)
+	headFiles := fmt.Sprintf("%d", len(comp.Head.Files))
+	headLines := fmt.Sprintf("%d", comp.Head.TotalLines)
+	headHits := fmt.Sprintf("%d", comp.Head.Hits())
+	headMisses := fmt.Sprintf("%d", comp.Head.Misses())
+
+	var baseCoverage, baseFiles, baseLines, baseHits, baseMisses string
+	var coverageDelta, filesDelta, linesDelta, hitsDelta, missesDelta string
+	coveragePrefix, hitsPrefix, missesPrefix := " ", " ", " "
+
+	if hasBase {
+		baseCoverage = fmt.Sprintf("%.2f%%", comp.Base.Coverage)
+		baseFiles = fmt.Sprintf("%d", len(comp.Base.Files))
+		baseLines = fmt.Sprintf("%d", comp.Base.TotalLines)
+		baseHits = fmt.Sprintf("%d", comp.Base.Hits())
+		baseMisses = fmt.Sprintf("%d", comp.Base.Misses())
+
 		// Rounded to display precision before comparing, same as
 		// formatDeltaString: a raw delta of e.g. 0.004 is 0.00% once printed,
 		// so it gets ø and a blank prefix instead of a misleading +0.00%
 		// (issue #38).
 		coverageDiff := roundToDisplayPrecision(comp.Head.Coverage - comp.Base.Coverage)
-		prefix := " "
-		deltaStr := "ø"
+		coverageDelta = "ø"
 		if coverageDiff > 0 {
-			prefix = "+"
-			deltaStr = fmt.Sprintf("+%.2f%%", coverageDiff)
+			coveragePrefix = "+"
+			coverageDelta = fmt.Sprintf("+%.2f%%", coverageDiff)
 		} else if coverageDiff < 0 {
-			prefix = "-"
-			deltaStr = fmt.Sprintf("%.2f%%", coverageDiff)
+			coveragePrefix = "-"
+			coverageDelta = fmt.Sprintf("%.2f%%", coverageDiff)
 		}
-		sb.WriteString(fmt.Sprintf("%s Coverage     %6.2f%%   %6.2f%%   %s\n",
-			prefix, comp.Base.Coverage, comp.Head.Coverage, deltaStr))
-	} else {
-		sb.WriteString(fmt.Sprintf("  Coverage              %6.2f%%\n", comp.Head.Coverage))
-	}
 
-	sb.WriteString("=============================================\n")
+		filesDelta = formatIntDelta(len(comp.Head.Files) - len(comp.Base.Files))
+		linesDelta = formatIntDelta(comp.Head.TotalLines - comp.Base.TotalLines)
 
-	if comp.Base != nil && !comp.NoBaseFiles {
-		filesDiff := len(comp.Head.Files) - len(comp.Base.Files)
-		sb.WriteString(fmt.Sprintf("  Files           %4d      %4d   %5s\n",
-			len(comp.Base.Files), len(comp.Head.Files), formatIntDelta(filesDiff)))
-
-		linesDiff := comp.Head.TotalLines - comp.Base.TotalLines
-		sb.WriteString(fmt.Sprintf("  Lines          %5d     %5d   %5s\n",
-			comp.Base.TotalLines, comp.Head.TotalLines, formatIntDelta(linesDiff)))
-	} else {
-		sb.WriteString(fmt.Sprintf("  Files                     %4d\n", len(comp.Head.Files)))
-		sb.WriteString(fmt.Sprintf("  Lines                    %5d\n", comp.Head.TotalLines))
-	}
-
-	sb.WriteString("=============================================\n")
-
-	if comp.Base != nil && !comp.NoBaseFiles {
 		hitsDiff := comp.Head.Hits() - comp.Base.Hits()
-		hitsPrefix := " "
 		if hitsDiff > 0 {
 			hitsPrefix = "+"
 		} else if hitsDiff < 0 {
 			hitsPrefix = "-"
 		}
-		sb.WriteString(fmt.Sprintf("%s Hits          %5d     %5d   %5s\n",
-			hitsPrefix, comp.Base.Hits(), comp.Head.Hits(), formatIntDelta(hitsDiff)))
+		hitsDelta = formatIntDelta(hitsDiff)
 
 		missesDiff := comp.Head.Misses() - comp.Base.Misses()
-		missesPrefix := " "
 		if missesDiff < 0 {
 			missesPrefix = "+"
 		} else if missesDiff > 0 {
 			missesPrefix = "-"
 		}
-		sb.WriteString(fmt.Sprintf("%s Misses        %5d     %5d   %5s\n",
-			missesPrefix, comp.Base.Misses(), comp.Head.Misses(), formatIntDelta(missesDiff)))
+		missesDelta = formatIntDelta(missesDiff)
+	}
+
+	// One column width for every numeric cell in the block, base, head and
+	// delta alike, sized to the widest one that will actually render. A
+	// six-digit Lines count or a 100.00% Coverage figure now widens every
+	// column together instead of leaving the rest on their old, narrower
+	// grid (issue #45).
+	colWidth := diffColumnWidth(
+		headCoverage, headFiles, headLines, headHits, headMisses,
+		baseCoverage, baseFiles, baseLines, baseHits, baseMisses,
+		coverageDelta, filesDelta, linesDelta, hitsDelta, missesDelta,
+	)
+	valueCols := 1
+	if hasBase {
+		valueCols = 3
+	}
+	rowWidth := diffLabelWidth + colWidth*valueCols
+
+	// The ## line's own content can need more room than the value grid
+	// does -- a base branch name has no length limit -- and used to
+	// overflow the hard-coded 45-column @@/==== rule around it instead of
+	// the rule growing to fit (issue #45).
+	hashLine := fmt.Sprintf("##           %8s   %8s     +/-   ", baseBranch, prRef)
+	totalWidth := max(rowWidth, len(hashLine)+2, len("Coverage Diff")+6)
+
+	sb.WriteString(diffTitleLine("Coverage Diff", totalWidth))
+	sb.WriteString(fmt.Sprintf("%-*s##\n", totalWidth-2, hashLine))
+	sb.WriteString(strings.Repeat("=", totalWidth) + "\n")
+
+	if hasBase {
+		sb.WriteString(diffRow3(coveragePrefix, "Coverage", colWidth, baseCoverage, headCoverage, coverageDelta))
 	} else {
-		sb.WriteString(fmt.Sprintf("  Hits                     %5d\n", comp.Head.Hits()))
-		sb.WriteString(fmt.Sprintf("  Misses                   %5d\n", comp.Head.Misses()))
+		sb.WriteString(diffRow1("Coverage", colWidth, headCoverage))
+	}
+	sb.WriteString(strings.Repeat("=", totalWidth) + "\n")
+
+	if hasBase {
+		sb.WriteString(diffRow3(" ", "Files", colWidth, baseFiles, headFiles, filesDelta))
+		sb.WriteString(diffRow3(" ", "Lines", colWidth, baseLines, headLines, linesDelta))
+	} else {
+		sb.WriteString(diffRow1("Files", colWidth, headFiles))
+		sb.WriteString(diffRow1("Lines", colWidth, headLines))
+	}
+	sb.WriteString(strings.Repeat("=", totalWidth) + "\n")
+
+	if hasBase {
+		sb.WriteString(diffRow3(hitsPrefix, "Hits", colWidth, baseHits, headHits, hitsDelta))
+		sb.WriteString(diffRow3(missesPrefix, "Misses", colWidth, baseMisses, headMisses, missesDelta))
+	} else {
+		sb.WriteString(diffRow1("Hits", colWidth, headHits))
+		sb.WriteString(diffRow1("Misses", colWidth, headMisses))
 	}
 
 	sb.WriteString("```\n\n")

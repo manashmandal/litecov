@@ -897,6 +897,50 @@ func TestFormatCoverageDiff(t *testing.T) {
 	}
 }
 
+// TestFormatCoverageDiff_HeaderMatchesSeparatorWidth reproduces the
+// formatCoverageDiff half of issue #45: the "@@ Coverage Summary @@" banner
+// was hard-coded to 41 characters against a 42-character "====" separator,
+// one column short no matter what the report's numbers were, and the
+// Coverage/Lines/Files rows each carried their own hand-picked padding
+// instead of a shared column width.
+func TestFormatCoverageDiff_HeaderMatchesSeparatorWidth(t *testing.T) {
+	report := &coverage.Report{
+		TotalCovered: 113658,
+		TotalLines:   121830,
+		Coverage:     93.29,
+		Files:        make([]coverage.FileCoverage, 1336),
+	}
+
+	result := formatCoverageDiff(report)
+	lines := diffBlockLines(result)
+	if len(lines) < 2 {
+		t.Fatalf("expected at least a @@ banner and a ==== separator, got %q", lines)
+	}
+	bannerLine, separatorLine := lines[0], lines[1]
+
+	if len(bannerLine) != len(separatorLine) {
+		t.Errorf("@@ banner is %d chars, ==== separator is %d chars: %q vs %q",
+			len(bannerLine), len(separatorLine), bannerLine, separatorLine)
+	}
+
+	var rows []string
+	for _, l := range lines[2:] {
+		if strings.HasPrefix(l, "=") {
+			continue
+		}
+		rows = append(rows, l)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("expected 3 metric rows (Coverage, Lines, Files), got %d: %q", len(rows), rows)
+	}
+	width := len(rows[0])
+	for _, row := range rows {
+		if len(row) != width {
+			t.Errorf("row %q has length %d, want %d like every other row in the block", row, len(row), width)
+		}
+	}
+}
+
 func TestFormatImpactedFiles(t *testing.T) {
 	files := []coverage.FileCoverage{
 		{Path: "file1.go", LinesCovered: 90, LinesTotal: 100},
@@ -1861,6 +1905,102 @@ func TestFormatCoverageDiffWithComparison(t *testing.T) {
 			t.Errorf("a real Lines change should still render its delta, got %q", linesLine)
 		}
 	})
+}
+
+// diffBlockLines returns the lines inside a rendered comment's fenced
+// ```diff block, with the fence markers themselves stripped. Shared by the
+// issue #45 tests below to inspect the Coverage Diff/Summary block's layout
+// without depending on the rest of the comment around it.
+func diffBlockLines(result string) []string {
+	const fenceOpen = "```diff\n"
+	start := strings.Index(result, fenceOpen)
+	if start == -1 {
+		return nil
+	}
+	start += len(fenceOpen)
+	end := strings.Index(result[start:], "```")
+	if end == -1 {
+		return nil
+	}
+	return strings.Split(strings.TrimRight(result[start:start+end], "\n"), "\n")
+}
+
+// TestFormatCoverageDiffWithComparison_RowsShareOneColumnGrid reproduces
+// issue #45 with the moto-scale numbers from the report: every row of the
+// Coverage Diff block picked its own column widths by hand, so Coverage,
+// Files, Lines, Hits and Misses each landed on a different grid instead of
+// one shared table the way Codecov's own comment does.
+func TestFormatCoverageDiffWithComparison_RowsShareOneColumnGrid(t *testing.T) {
+	comp := &coverage.Comparison{
+		Head: &coverage.Report{
+			TotalCovered: 113658,
+			TotalLines:   121830,
+			Coverage:     93.29,
+			Files:        make([]coverage.FileCoverage, 1336),
+		},
+		Base: &coverage.Report{
+			TotalCovered: 113657,
+			TotalLines:   121827,
+			Coverage:     93.30,
+			Files:        make([]coverage.FileCoverage, 1336),
+		},
+	}
+
+	result := formatCoverageDiffWithComparison(comp, Options{PRNumber: 42, BaseBranch: "main"})
+	lines := diffBlockLines(result)
+
+	var rows []string
+	for _, l := range lines {
+		if strings.HasPrefix(l, "@@") || strings.HasPrefix(l, "##") || strings.HasPrefix(l, "=") {
+			continue
+		}
+		rows = append(rows, l)
+	}
+
+	if len(rows) != 5 {
+		t.Fatalf("expected 5 metric rows (Coverage, Files, Lines, Hits, Misses), got %d: %q", len(rows), rows)
+	}
+
+	width := len(rows[0])
+	for _, row := range rows {
+		if len(row) != width {
+			t.Errorf("row %q has length %d, want %d like every other row in the block", row, len(row), width)
+		}
+	}
+}
+
+// TestFormatCoverageDiffWithComparison_LongBranchNameWidensTheWholeBlock
+// reproduces the second half of issue #45: a base branch name longer than
+// the 8 characters formatCoverageDiffWithComparison used to assume for the
+// "##" line overflowed it past the fixed-width "====" separator and "@@"
+// banner around it, instead of the whole block growing to fit.
+func TestFormatCoverageDiffWithComparison_LongBranchNameWidensTheWholeBlock(t *testing.T) {
+	comp := &coverage.Comparison{
+		Head: &coverage.Report{TotalCovered: 100, TotalLines: 100, Coverage: 100.0, Files: make([]coverage.FileCoverage, 1)},
+		Base: &coverage.Report{TotalCovered: 100, TotalLines: 100, Coverage: 100.0, Files: make([]coverage.FileCoverage, 1)},
+	}
+
+	result := formatCoverageDiffWithComparison(comp, Options{
+		PRNumber:   104857,
+		BaseBranch: "release/2026.03-hotfix-candidate",
+	})
+	lines := diffBlockLines(result)
+	if len(lines) < 3 {
+		t.Fatalf("expected at least a @@ banner, a ## line and a ==== separator, got %q", lines)
+	}
+	bannerLine, hashLine, separatorLine := lines[0], lines[1], lines[2]
+
+	if !strings.Contains(hashLine, "release/2026.03-hotfix-candidate") || !strings.Contains(hashLine, "#104857") {
+		t.Fatalf("## line missing the branch or PR reference: %q", hashLine)
+	}
+	if len(bannerLine) != len(separatorLine) {
+		t.Errorf("@@ banner is %d chars, ==== separator is %d chars: %q vs %q",
+			len(bannerLine), len(separatorLine), bannerLine, separatorLine)
+	}
+	if len(hashLine) != len(separatorLine) {
+		t.Errorf("## line is %d chars, ==== separator is %d chars: %q vs %q",
+			len(hashLine), len(separatorLine), hashLine, separatorLine)
+	}
 }
 
 func TestFormatImpactedFilesWithDelta(t *testing.T) {
