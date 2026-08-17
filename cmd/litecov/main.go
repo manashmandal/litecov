@@ -107,24 +107,7 @@ func main() {
 	normalizeReportPaths(report.Files, *pathPrefix, pathFixRules)
 
 	// Parse base coverage if provided
-	var baseReport *coverage.Report
-	if *baseCoverageFile != "" {
-		if baseFile, err := os.Open(*baseCoverageFile); err == nil {
-			defer baseFile.Close()
-			if detected, err := parser.DetectFormat(baseFile); err == nil {
-				baseFile.Seek(0, 0)
-				if bp, err := parser.GetParser(detected); err == nil {
-					baseReport, _ = bp.Parse(baseFile)
-					if baseReport != nil {
-						normalizeReportPaths(baseReport.Files, *pathPrefix, pathFixRules)
-						fmt.Printf("Loaded base coverage from: %s (%.2f%%)\n", *baseCoverageFile, baseReport.Coverage)
-					}
-				}
-			}
-		} else {
-			fmt.Fprintf(os.Stderr, "Warning: Failed to open base coverage file: %v\n", err)
-		}
-	}
+	baseReport := loadBaseReport(*baseCoverageFile, *pathPrefix, pathFixRules)
 
 	gh := github.NewClient(token, owner, repo)
 
@@ -291,6 +274,47 @@ func normalizeReportPaths(files []coverage.FileCoverage, prefix string, fixes []
 	for i := range files {
 		files[i].Path = paths.NormalizeAndFixPath(files[i].Path, prefix, fixes)
 	}
+}
+
+// loadBaseReport parses the base coverage file at path the same way the head
+// report is parsed: format auto-detected, then handed to a parser built with
+// GetParserWithPath so a relative SF: path picks up a source prefix from
+// path the same way the head parser's does from *coverageFile. Building the
+// base parser with plain GetParser (no path) instead used to leave the base
+// report's paths unprefixed while the head report's carried the coverage
+// file's directory as a prefix, so identical LCOV input produced different
+// paths on each side and NewComparison's lookup missed every file, each one
+// showing up as unmatched on both the head and base side of the comparison
+// (issue #29). Returns nil if path is empty or the file can't be opened,
+// format-detected, or parsed.
+func loadBaseReport(path, pathPrefix string, fixes []paths.PathFix) *coverage.Report {
+	if path == "" {
+		return nil
+	}
+	baseFile, err := os.Open(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: Failed to open base coverage file: %v\n", err)
+		return nil
+	}
+	defer baseFile.Close()
+
+	detected, err := parser.DetectFormat(baseFile)
+	if err != nil {
+		return nil
+	}
+	baseFile.Seek(0, 0)
+
+	bp, err := parser.GetParserWithPath(detected, path)
+	if err != nil {
+		return nil
+	}
+
+	baseReport, _ := bp.Parse(baseFile)
+	if baseReport != nil {
+		normalizeReportPaths(baseReport.Files, pathPrefix, fixes)
+		fmt.Printf("Loaded base coverage from: %s (%.2f%%)\n", path, baseReport.Coverage)
+	}
+	return baseReport
 }
 
 func detectCoverageFile() string {
