@@ -1021,6 +1021,167 @@ func TestCoverageFileGlob_MergesAcrossPackages(t *testing.T) {
 	}
 }
 
+// TestDetectCoverageFiles_RecognizedFilenames locks in the filename
+// allowlist detectCoverageFiles searches for, including the three names
+// issue #90 flagged as missing from the old candidate list: coverage.info
+// (lcov's own geninfo tool defaults to this), coverage.cobertura.xml
+// (Coverlet's default output name), and coverage.out (go test
+// -coverprofile's default -- unreachable by auto-detect before now because
+// nothing parsed the "go" format, issue #73).
+func TestDetectCoverageFiles_RecognizedFilenames(t *testing.T) {
+	names := []string{
+		"coverage.lcov",
+		"lcov.info",
+		"coverage.info",
+		"coverage.xml",
+		"cobertura.xml",
+		"coverage.cobertura.xml",
+		"coverage.out",
+	}
+	for _, name := range names {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, name)
+			if err := os.WriteFile(path, []byte("placeholder"), 0644); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+			got := detectCoverageFiles(dir)
+			if len(got) != 1 || got[0] != path {
+				t.Errorf("detectCoverageFiles(%q) = %v, want [%q]", dir, got, path)
+			}
+		})
+	}
+}
+
+// TestDetectCoverageFiles_MonorepoRecursion reproduces issue #90's own
+// evidence: a monorepo with a coverage file under each package one
+// directory down used to report "No coverage file found" because the old
+// candidate list only ever checked a fixed set of paths at the working
+// directory itself and never recursed. Both files must come back, not just
+// one -- the caller feeds the full list into the same merge
+// -coverage-file's glob support already uses (issue #89), so neither
+// package's coverage silently disappears from the report.
+func TestDetectCoverageFiles_MonorepoRecursion(t *testing.T) {
+	dir := t.TempDir()
+	pkgA := filepath.Join(dir, "mono", "pkg-a", "coverage.lcov")
+	pkgB := filepath.Join(dir, "mono", "pkg-b", "coverage.lcov")
+	for _, p := range []string{pkgA, pkgB} {
+		if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		if err := os.WriteFile(p, []byte("SF:a.go\nDA:1,1\nend_of_record\n"), 0644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+	}
+
+	got := detectCoverageFiles(dir)
+	want := []string{pkgA, pkgB}
+	if len(got) != len(want) {
+		t.Fatalf("detectCoverageFiles(%q) = %v, want %v", dir, got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("detectCoverageFiles(%q)[%d] = %q, want %q", dir, i, got[i], want[i])
+		}
+	}
+}
+
+// TestDetectCoverageFiles_SkipsIgnoredDirectories confirms the walk never
+// descends into version control metadata or dependency/build trees -- a
+// checked-in coverage.lcov fixture under node_modules or vendor must not
+// get swept into auto-detect and merged into the real report.
+func TestDetectCoverageFiles_SkipsIgnoredDirectories(t *testing.T) {
+	skipped := []string{".git", "node_modules", "vendor", "dist"}
+	for _, name := range skipped {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			ignored := filepath.Join(dir, name, "coverage.lcov")
+			if err := os.MkdirAll(filepath.Dir(ignored), 0755); err != nil {
+				t.Fatalf("MkdirAll: %v", err)
+			}
+			if err := os.WriteFile(ignored, []byte("placeholder"), 0644); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+			real := filepath.Join(dir, "coverage.xml")
+			if err := os.WriteFile(real, []byte("placeholder"), 0644); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+
+			got := detectCoverageFiles(dir)
+			if len(got) != 1 || got[0] != real {
+				t.Errorf("detectCoverageFiles(%q) = %v, want only [%q]; %s must be skipped", dir, got, real, name)
+			}
+		})
+	}
+}
+
+// TestDetectCoverageFiles_DepthCap confirms the walk reaches a Maven-style
+// target/site/jacoco/jacoco.xml layout (3 directories down) but stops one
+// level short of that, so an unrelated tree deep in a monorepo doesn't turn
+// every run into a full filesystem walk.
+func TestDetectCoverageFiles_DepthCap(t *testing.T) {
+	dir := t.TempDir()
+	withinCap := filepath.Join(dir, "a", "b", "c", "coverage.xml")
+	beyondCap := filepath.Join(dir, "a", "b", "c", "d", "cobertura.xml")
+	for _, p := range []string{withinCap, beyondCap} {
+		if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		if err := os.WriteFile(p, []byte("placeholder"), 0644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+	}
+
+	got := detectCoverageFiles(dir)
+	if len(got) != 1 || got[0] != withinCap {
+		t.Errorf("detectCoverageFiles(%q) = %v, want only [%q]; %q is past maxDetectDepth and must be excluded", dir, got, withinCap, beyondCap)
+	}
+}
+
+// TestDetectCoverageFiles_ExcludesRawJaCoCoXML confirms jacoco.xml itself
+// is never auto-detected, even when present. JaCoCo has no Cobertura
+// export, so the README has JaCoCo users run cover2cover.py and produce a
+// converted cobertura.xml alongside the original -- if the raw jacoco.xml
+// were also picked up, both files would be handed to the parse loop in
+// main, which os.Exit(1)s on the first file that fails to parse, taking
+// the one good, converted file down with the one litecov was never going
+// to be able to read.
+func TestDetectCoverageFiles_ExcludesRawJaCoCoXML(t *testing.T) {
+	dir := t.TempDir()
+	jacocoDir := filepath.Join(dir, "target", "site", "jacoco")
+	if err := os.MkdirAll(jacocoDir, 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	raw := filepath.Join(jacocoDir, "jacoco.xml")
+	converted := filepath.Join(jacocoDir, "cobertura.xml")
+	for _, p := range []string{raw, converted} {
+		if err := os.WriteFile(p, []byte("placeholder"), 0644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+	}
+
+	got := detectCoverageFiles(dir)
+	if len(got) != 1 || got[0] != converted {
+		t.Errorf("detectCoverageFiles(%q) = %v, want only the converted [%q]; raw jacoco.xml must be excluded", dir, got, converted)
+	}
+}
+
+// TestDetectCoverageFiles_NoMatches confirms an empty result -- not a panic
+// or a bogus match -- when nothing in the tree looks like a coverage
+// report, the case main treats as "No coverage file found. Specify with
+// -coverage-file".
+func TestDetectCoverageFiles_NoMatches(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("placeholder"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	got := detectCoverageFiles(dir)
+	if len(got) != 0 {
+		t.Errorf("detectCoverageFiles(%q) = %v, want none", dir, got)
+	}
+}
+
 // TestWriteGitHubOutput reproduces issue #88's two GITHUB_OUTPUT bugs.
 // os.OpenFile was called without os.O_CREATE, so a GITHUB_OUTPUT file that
 // doesn't already exist failed to open instead of being created, and the

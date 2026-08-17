@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"math"
 	"os"
 	"path/filepath"
@@ -123,13 +124,17 @@ func main() {
 		os.Exit(1)
 	}
 	if len(coverageFiles) == 0 {
-		detected := detectCoverageFile()
-		if detected == "" {
+		detected := detectCoverageFiles(".")
+		if len(detected) == 0 {
 			fmt.Fprintln(os.Stderr, "No coverage file found. Specify with -coverage-file")
 			os.Exit(1)
 		}
-		fmt.Printf("Auto-detected coverage file: %s\n", detected)
-		coverageFiles = []string{detected}
+		if len(detected) == 1 {
+			fmt.Printf("Auto-detected coverage file: %s\n", detected[0])
+		} else {
+			fmt.Printf("Auto-detected %d coverage files: %s\n", len(detected), strings.Join(detected, ", "))
+		}
+		coverageFiles = detected
 	}
 
 	// Each match is parsed on its own -- GetParserWithPath resolves an
@@ -778,7 +783,7 @@ func loadBaseReport(path, pathPrefix string, fixes []paths.PathFix) (*coverage.R
 // the same literal path listed twice) is only kept once, in the order it
 // was first seen, so it isn't parsed and merged into the report twice.
 // Returns (nil, nil) for an empty pattern -- the caller falls back to
-// detectCoverageFile in that case, same as before this flag accepted a
+// detectCoverageFiles in that case, same as before this flag accepted a
 // list.
 func resolveCoverageFiles(pattern string) ([]string, error) {
 	var files []string
@@ -806,22 +811,94 @@ func resolveCoverageFiles(pattern string) ([]string, error) {
 	return files, nil
 }
 
-func detectCoverageFile() string {
-	candidates := []string{
-		"coverage.lcov",
-		"lcov.info",
-		"coverage/lcov.info",
-		"coverage.xml",
-		"cobertura.xml",
-		"coverage/cobertura.xml",
-		"coverage/coverage.xml",
-	}
-	for _, c := range candidates {
-		if _, err := os.Stat(c); err == nil {
-			return c
+// coverageFileNames are the report filenames detectCoverageFiles looks for,
+// matched against a path's base name so coverage/lcov.info is found the
+// same way a root-level coverage.lcov is. This replaces the six literal
+// paths the old flat candidate list checked (coverage.lcov, lcov.info,
+// coverage/lcov.info, coverage.xml, cobertura.xml, coverage/cobertura.xml)
+// plus a seventh, coverage/coverage.xml, that the README never documented
+// -- both now covered by recursing into "coverage" instead of hardcoding
+// it as a prefix. It also adds coverage.info (lcov's own geninfo tool
+// defaults to this name) and coverage.cobertura.xml (Coverlet's default
+// output name under TestResults/<guid>/). coverage.out (go test
+// -coverprofile's default) is included now that the "go" format has a
+// parser; it was left out before because finding it would have only
+// produced a worse error than not finding it at all (issue #73).
+//
+// JaCoCo's jacoco.xml is deliberately left out: the README's Cobertura
+// section has JaCoCo users convert it with cover2cover.py into a
+// cobertura.xml next to it, which the cobertura.xml entry already covers.
+// Adding the raw jacoco.xml here would make auto-detect pick up both
+// files, and the parse loop in main aborts the whole run on the first file
+// that fails to parse -- so the one good, converted file would get dragged
+// down by the one litecov was never going to be able to read.
+var coverageFileNames = map[string]bool{
+	"coverage.lcov":          true,
+	"lcov.info":              true,
+	"coverage.info":          true,
+	"coverage.xml":           true,
+	"cobertura.xml":          true,
+	"coverage.cobertura.xml": true,
+	"coverage.out":           true,
+}
+
+// detectSkipDirs are directories detectCoverageFiles never walks into:
+// version control metadata and dependency/build trees that can be huge and
+// never hold a project's own coverage report.
+var detectSkipDirs = map[string]bool{
+	".git":         true,
+	"node_modules": true,
+	"vendor":       true,
+	"dist":         true,
+}
+
+// maxDetectDepth caps how many directories deep detectCoverageFiles
+// recurses below root. Depth 3 reaches the nested layouts real tools
+// produce -- Maven's target/site/jacoco/jacoco.xml and Coverlet's
+// TestResults/<guid>/coverage.cobertura.xml are both within it -- without
+// turning every run into an unbounded walk of the whole tree.
+const maxDetectDepth = 3
+
+// detectCoverageFiles searches root for coverage reports litecov knows how
+// to read, recursing up to maxDetectDepth directories deep instead of only
+// checking a fixed list of paths at root itself. The flat check missed any
+// layout that wasn't one of seven exact paths: a monorepo with
+// mono/pkg-a/coverage.lcov and mono/pkg-b/coverage.lcov one directory down
+// reported "No coverage file found" with two valid reports sitting right
+// there, and so did a plain coverage.out in the working directory (issue
+// #90).
+//
+// Every match is returned, sorted for a deterministic order, rather than
+// just the first: the caller feeds the full list through the same
+// -coverage-file merge path issue #89 built, so pkg-a's and pkg-b's
+// reports both end up in the PR comment instead of only whichever one the
+// walk happened to reach first.
+func detectCoverageFiles(root string) []string {
+	var found []string
+	filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || path == root {
+			return nil
 		}
-	}
-	return ""
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return nil
+		}
+		depth := strings.Count(rel, string(filepath.Separator))
+
+		if d.IsDir() {
+			if detectSkipDirs[d.Name()] || depth >= maxDetectDepth {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		if coverageFileNames[d.Name()] {
+			found = append(found, path)
+		}
+		return nil
+	})
+	sort.Strings(found)
+	return found
 }
 
 // parseCoverageFile opens, format-detects (when format is "auto"), and
