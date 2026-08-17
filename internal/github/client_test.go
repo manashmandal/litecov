@@ -2,6 +2,7 @@ package github
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -745,6 +746,26 @@ func TestClient_doRequest_PermissionErrorNotRetried(t *testing.T) {
 	}
 }
 
+// TestClient_CreateComment_PermissionDenied covers issue #42's verified
+// repro: a fork PR's read-only GITHUB_TOKEN gets a 403 "Resource not
+// accessible by integration" from CreateComment. The returned error must
+// satisfy errors.Is(err, ErrPermissionDenied) so main can tell it apart
+// from a network failure or an exhausted retry and skip instead of failing
+// the whole run.
+func TestClient_CreateComment_PermissionDenied(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		w.Write([]byte(`{"message": "Resource not accessible by integration"}`))
+	}))
+	defer server.Close()
+
+	client := &Client{Token: "test", Owner: "o", Repo: "r", BaseURL: server.URL}
+	err := client.CreateComment(1, "body")
+	if !errors.Is(err, ErrPermissionDenied) {
+		t.Errorf("CreateComment() error = %v, want errors.Is(err, ErrPermissionDenied)", err)
+	}
+}
+
 // TestApiError_RateLimitMessage covers issue #52's complaint that a rate
 // limit is reported as "GitHub API error: 403 Forbidden - ...", which reads
 // identically to a permissions failure. The message must now name rate
@@ -759,6 +780,50 @@ func TestApiError_RateLimitMessage(t *testing.T) {
 	err := apiError(resp)
 	if !strings.Contains(err.Error(), "rate limit") {
 		t.Errorf("error = %q, want it to mention rate limiting", err.Error())
+	}
+}
+
+// TestApiError_PermissionDeniedWraps covers issue #42's detection step: a
+// 403 or 404 that isn't rate limiting must wrap ErrPermissionDenied so
+// callers can distinguish "the token can't do this" from a transient
+// failure with errors.Is, while a rate-limited 403 and other status codes
+// must not.
+func TestApiError_PermissionDeniedWraps(t *testing.T) {
+	tests := []struct {
+		name    string
+		status  int
+		headers http.Header
+		want    bool
+	}{
+		{name: "plain 403 is permission denied", status: http.StatusForbidden, want: true},
+		{name: "404 is permission denied", status: http.StatusNotFound, want: true},
+		{
+			name:    "rate-limited 403 is not permission denied",
+			status:  http.StatusForbidden,
+			headers: http.Header{"X-Ratelimit-Remaining": []string{"0"}},
+			want:    false,
+		},
+		{name: "401 is not permission denied", status: http.StatusUnauthorized, want: false},
+		{name: "500 is not permission denied", status: http.StatusInternalServerError, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			headers := tt.headers
+			if headers == nil {
+				headers = http.Header{}
+			}
+			resp := &http.Response{
+				StatusCode: tt.status,
+				Status:     fmt.Sprintf("%d %s", tt.status, http.StatusText(tt.status)),
+				Header:     headers,
+				Body:       io.NopCloser(strings.NewReader("body")),
+			}
+			err := apiError(resp)
+			if got := errors.Is(err, ErrPermissionDenied); got != tt.want {
+				t.Errorf("errors.Is(apiError(%d), ErrPermissionDenied) = %v, want %v (err = %q)", tt.status, got, tt.want, err)
+			}
+		})
 	}
 }
 

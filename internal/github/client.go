@@ -4,6 +4,7 @@ package github
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -141,15 +142,29 @@ func retryDelay(resp *http.Response, attempt int) time.Duration {
 	return backoff + time.Duration(rand.Int63n(int64(backoff)))
 }
 
+// ErrPermissionDenied wraps a 403 or 404 response that isn't rate limiting:
+// the shape a request takes when the token genuinely lacks a permission
+// rather than hitting a transient failure. The common case is the
+// read-only GITHUB_TOKEN GitHub issues for a pull_request event triggered
+// from a fork, which can create or update neither PR comments nor commit
+// statuses (issue #42). Callers use errors.Is to treat this class of
+// failure as "nothing this run can do about it" instead of a hard error.
+var ErrPermissionDenied = errors.New("GitHub API permission denied")
+
 // apiError builds the error for a non-success response, calling out rate
-// limiting by name so it doesn't read like a permissions failure -- both
-// surface as a 403 with an otherwise identical "GitHub API error" message.
+// limiting and permission failures by name so neither reads like a plain
+// unclassified error -- a rate limit and a real permissions failure can
+// both surface as an otherwise identical 403.
 func apiError(resp *http.Response) error {
 	body, _ := io.ReadAll(resp.Body)
-	if isRateLimited(resp) {
+	switch {
+	case isRateLimited(resp):
 		return fmt.Errorf("GitHub API rate limit exceeded: %s - %s", resp.Status, string(body))
+	case resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusNotFound:
+		return fmt.Errorf("%w: %s - %s", ErrPermissionDenied, resp.Status, string(body))
+	default:
+		return fmt.Errorf("GitHub API error: %s - %s", resp.Status, string(body))
 	}
-	return fmt.Errorf("GitHub API error: %s - %s", resp.Status, string(body))
 }
 
 // ChangedFile is one entry from a pull request's file diff.

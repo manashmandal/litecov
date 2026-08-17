@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -240,10 +241,14 @@ func main() {
 
 	if prNumber > 0 {
 		if err := postCoverageComment(gh, prNumber, comment.MarkerFor(*flagName), commentBody); err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to post comment: %v\n", err)
-			os.Exit(1)
+			message, fatal := commentPostOutcome(err)
+			fmt.Fprintln(os.Stderr, message)
+			if fatal {
+				os.Exit(1)
+			}
+		} else {
+			fmt.Println("Coverage comment posted successfully")
 		}
-		fmt.Println("Coverage comment posted successfully")
 	} else {
 		fmt.Println(noPRNumberWarning(eventName))
 	}
@@ -316,6 +321,24 @@ func postCoverageComment(gh *github.Client, prNumber int, marker, body string) e
 	}
 	fmt.Println("Creating new comment")
 	return gh.CreateComment(prNumber, body)
+}
+
+// commentPostOutcome decides what postCoverageComment's failure means for
+// the run: the message to print, and whether it should be fatal. A
+// permission error is what a fork PR's read-only GITHUB_TOKEN produces on
+// CreateComment/UpdateComment, since GitHub only grants such a token read
+// access:
+// https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request
+// SetCommitStatus already treats that same class of failure as non-fatal
+// below; this makes comment posting consistent with it instead of failing
+// every fork PR's run over a comment the token was never going to be
+// allowed to post (issue #42). Anything else -- a network failure, a 5xx
+// that outlasted the client's retries, a malformed body -- is still fatal.
+func commentPostOutcome(err error) (message string, fatal bool) {
+	if errors.Is(err, github.ErrPermissionDenied) {
+		return "Cannot comment: GITHUB_TOKEN is read-only (fork PR or restricted workflow permissions). Skipping comment.", false
+	}
+	return fmt.Sprintf("Failed to post comment: %v", err), true
 }
 
 // commitStatusForCoverage decides the state and description for the

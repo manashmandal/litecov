@@ -202,6 +202,41 @@ so it can diff them.
     echo "Lines: ${{ steps.coverage.outputs.lines-covered }}/${{ steps.coverage.outputs.lines-total }}"
 ```
 
+## Fork Pull Requests
+
+GitHub only grants the default `GITHUB_TOKEN` read access on `pull_request` events triggered from a fork. LiteCov can still read the diff and compute coverage, but creating or updating a PR comment needs write access, so GitHub rejects both with a 403. LiteCov logs that and moves on instead of failing the run over a comment it could never have posted.
+
+To get comments on fork PRs, run LiteCov from a workflow that actually has write access:
+
+- `pull_request_target` - runs with the base repo's token and secrets instead of the fork's. Check out the PR's head SHA explicitly rather than trusting the fork's workflow file, since this event grants elevated permissions to a run triggered by code you don't control:
+
+  ```yaml
+  name: CI (fork PRs)
+  on:
+    pull_request_target:
+
+  jobs:
+    test:
+      runs-on: ubuntu-latest
+      permissions:
+        pull-requests: write
+      steps:
+        - uses: actions/checkout@v4
+          with:
+            ref: ${{ github.event.pull_request.head.sha }}
+
+        - name: Run tests with coverage
+          run: go test -coverprofile=coverage.out ./...
+
+        - uses: manashmandal/litecov@v1
+          with:
+            coverage-file: coverage.out
+  ```
+
+- Two workflows connected by `workflow_run` - a `pull_request` workflow that builds and uploads the coverage file as an artifact, no token required; a separate `workflow_run` workflow that downloads the artifact and runs LiteCov with a `pull-requests: write` token. More setup, but the fork's code never runs with write access.
+
+Either way, LiteCov itself needs no extra configuration: give it a token with `pull-requests: write` on whichever workflow actually invokes it.
+
 ## PR Comment
 
 LiteCov posts a clean, informative comment on your PR with clickable links:

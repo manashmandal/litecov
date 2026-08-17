@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -861,6 +863,48 @@ func TestPostCoverageComment(t *testing.T) {
 			}
 			if updateCalls != tt.wantUpdate {
 				t.Errorf("UpdateComment called %d times, want %d", updateCalls, tt.wantUpdate)
+			}
+		})
+	}
+}
+
+// TestCommentPostOutcome covers issue #42: a fork PR's read-only
+// GITHUB_TOKEN makes CreateComment/UpdateComment return a 403, which used
+// to be a hard failure that took down the whole run for every fork
+// contributor. A permission error must now produce a clear, non-fatal
+// message instead of the raw wrapped API error, while every other failure
+// stays fatal exactly as before.
+func TestCommentPostOutcome(t *testing.T) {
+	tests := []struct {
+		name        string
+		err         error
+		wantMessage string
+		wantFatal   bool
+	}{
+		{
+			// Wrapped the way postCoverageComment wraps a FindExistingComment
+			// failure, to confirm errors.Is still matches through that layer.
+			name:        "permission denied is reported and non-fatal",
+			err:         fmt.Errorf("looking up existing comment: %w", github.ErrPermissionDenied),
+			wantMessage: "Cannot comment: GITHUB_TOKEN is read-only (fork PR or restricted workflow permissions). Skipping comment.",
+			wantFatal:   false,
+		},
+		{
+			name:        "any other error stays fatal",
+			err:         errors.New("connection reset by peer"),
+			wantMessage: "Failed to post comment: connection reset by peer",
+			wantFatal:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			message, fatal := commentPostOutcome(tt.err)
+			if message != tt.wantMessage {
+				t.Errorf("message = %q, want %q", message, tt.wantMessage)
+			}
+			if fatal != tt.wantFatal {
+				t.Errorf("fatal = %v, want %v", fatal, tt.wantFatal)
 			}
 		})
 	}
