@@ -911,14 +911,17 @@ func TestCommentPostOutcome(t *testing.T) {
 	}
 }
 
-// TestBuildAnnotationLines covers issue #46: outputAnnotations printed one
-// ::warning per uncovered range with no cap, but GitHub's Actions toolkit
-// caps each step at 10 warning annotations and silently drops the rest with
-// no sign in the run's UI or its log. Which ten survived depended on
-// report.Files' parse order, not on which uncovered lines actually mattered
-// to the PR. buildAnnotationLines must rank a range that touches the PR's
-// own diff, and a changed file with no coverage at all, ahead of everything
-// else, then truncate to 10 and say how many it left out.
+// TestBuildAnnotationLines covers issue #46 (GitHub's Actions toolkit caps
+// each step at 10 warning annotations and silently drops the rest, so which
+// ten survived used to depend on report.Files' parse order rather than
+// which uncovered lines actually mattered to the PR) and issue #47 (a file
+// being in the changed set was enough to warn about every uncovered range
+// in it, including ranges the PR's diff never touched, so a one-line fix to
+// a large, sparsely-tested file warned about hundreds of unrelated lines).
+// buildAnnotationLines must clip every range to the PR's diff before it can
+// become a pending annotation, rank a changed file with no coverage at all
+// ahead of any range that survives that, then truncate to 10 and say how
+// many it left out.
 func TestBuildAnnotationLines(t *testing.T) {
 	bigLines := make([]int, 50)
 	for i := range bigLines {
@@ -950,6 +953,21 @@ func TestBuildAnnotationLines(t *testing.T) {
 			want: nil,
 		},
 		{
+			// main.go passes changedFiles=nil, patchedLines=nil here when
+			// show-files isn't "changed" -- there's no changed-file list to
+			// scope annotations to at all. Before this, a nil changedFiles
+			// skipped the per-file filter entirely, so every uncovered line
+			// in the whole report was annotated on every PR, unrelated.go
+			// included, regardless of how old it was (issue #47).
+			name: "no changed-file scoping at all skips annotations instead of covering the whole repo",
+			report: &coverage.Report{
+				Files: []coverage.FileCoverage{
+					{Path: "unrelated.go", UncoveredLines: []int{1, 2, 3}},
+				},
+			},
+			want: nil,
+		},
+		{
 			name: "ranked by range size within a tier, not report order",
 			report: &coverage.Report{
 				Files: []coverage.FileCoverage{
@@ -957,13 +975,18 @@ func TestBuildAnnotationLines(t *testing.T) {
 					{Path: "a.go", UncoveredLines: []int{1, 2, 3}},
 				},
 			},
+			changedFiles: []string{"a.go", "b.go"},
+			patchedLines: map[string][]diff.LineRange{
+				"a.go": {{Start: 1, End: 3}},
+				"b.go": {{Start: 10, End: 10}},
+			},
 			want: []string{
 				"::warning file=a.go,line=1,endLine=3,title=Uncovered::Lines 1-3 not covered by tests",
 				"::warning file=b.go,line=10,title=Uncovered::Line 10 not covered by tests",
 			},
 		},
 		{
-			name: "a range touching the PR's diff outranks a larger one that doesn't",
+			name: "a range outside the PR's diff produces no annotation, however large",
 			report: &coverage.Report{
 				Files: []coverage.FileCoverage{
 					{Path: "big.go", UncoveredLines: bigLines},
@@ -976,8 +999,33 @@ func TestBuildAnnotationLines(t *testing.T) {
 			},
 			want: []string{
 				"::warning file=small.go,line=5,title=Uncovered::Line 5 not covered by tests",
-				"::warning file=big.go,line=1,endLine=50,title=Uncovered::Lines 1-50 not covered by tests",
 			},
+		},
+		{
+			name: "an uncovered range is clipped to the lines the diff actually touched",
+			report: &coverage.Report{
+				Files: []coverage.FileCoverage{
+					{Path: "mixed.go", UncoveredLines: []int{8, 9, 10, 11, 12}},
+				},
+			},
+			changedFiles: []string{"mixed.go"},
+			patchedLines: map[string][]diff.LineRange{
+				// Lines 8-9 and 12 predate the PR; only 10-11 are its own.
+				"mixed.go": {{Start: 10, End: 11}},
+			},
+			want: []string{
+				"::warning file=mixed.go,line=10,endLine=11,title=Uncovered::Lines 10-11 not covered by tests",
+			},
+		},
+		{
+			name: "no patch data for a changed file suppresses its ranges instead of falling back to the whole file",
+			report: &coverage.Report{
+				Files: []coverage.FileCoverage{
+					{Path: "a.go", UncoveredLines: []int{1, 2, 3}},
+				},
+			},
+			changedFiles: []string{"a.go"},
+			want:         nil,
 		},
 		{
 			name: "a changed file with no coverage at all outranks every range, patch or not",
@@ -1000,6 +1048,10 @@ func TestBuildAnnotationLines(t *testing.T) {
 			report: &coverage.Report{
 				Files: []coverage.FileCoverage{{Path: "big.go", UncoveredLines: manyLines}},
 			},
+			changedFiles: []string{"big.go"},
+			patchedLines: map[string][]diff.LineRange{
+				"big.go": {{Start: 1, End: 23}},
+			},
 			want: append(append([]string{}, first10...),
 				"::notice::2 more coverage annotations not shown (GitHub caps annotations at 10 per step)"),
 		},
@@ -1007,6 +1059,10 @@ func TestBuildAnnotationLines(t *testing.T) {
 			name: "the truncation notice points at the PR comment when a PR exists",
 			report: &coverage.Report{
 				Files: []coverage.FileCoverage{{Path: "big.go", UncoveredLines: manyLines}},
+			},
+			changedFiles: []string{"big.go"},
+			patchedLines: map[string][]diff.LineRange{
+				"big.go": {{Start: 1, End: 23}},
 			},
 			hasPR: true,
 			want: append(append([]string{}, first10...),

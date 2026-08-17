@@ -695,14 +695,13 @@ const annotationCap = 10
 // coverage at all outranks any single range within a partially-covered
 // file: it means nothing in that file ran under test, and it has no line
 // count to compare against a range's size anyway, since it never made it
-// into the coverage report in the first place. A range that overlaps lines
-// the PR's own diff added outranks one that doesn't, since that's code this
-// PR is responsible for rather than a preexisting gap the change happens to
-// sit near.
+// into the coverage report in the first place. There's no lower tier for a
+// range the PR's diff never touched, because that range never becomes a
+// pending annotation in the first place -- see intersectPatchRange (issue
+// #47).
 const (
 	priorityNoCoverage = iota
 	priorityInPatch
-	priorityElsewhere
 )
 
 // pendingAnnotation is one ::warning outputAnnotations might print, held
@@ -764,21 +763,31 @@ func buildAnnotationLines(report *coverage.Report, changedFiles []string, patche
 			annotationPath = matchedPath
 		}
 
+		// Every uncovered range is clipped to patchedLines[annotationPath],
+		// the PR diff's added/modified lines for this file, before it can
+		// become a pending annotation. Before this, a file being in the
+		// changed set was enough to warn about every uncovered range in it,
+		// so a one-line fix to a large, sparsely-tested file warned about
+		// every other uncovered line in that file too, including code that
+		// predates the PR (issue #47). A file with no entry in
+		// patchedLines -- annotations aren't scoped to a PR's diff at all
+		// (show-files != "changed", or there's no PR), or this file's patch
+		// couldn't be parsed (binary, rename, an oversized diff; issue #6)
+		// -- contributes no ranges here rather than falling back to the
+		// whole file.
 		ranges := comment.GroupConsecutiveLines(file.UncoveredLines)
 		for _, r := range ranges {
-			var line string
-			if r.Start == r.End {
-				line = fmt.Sprintf("::warning file=%s,line=%d,title=Uncovered::Line %d not covered by tests",
-					annotationPath, r.Start, r.Start)
-			} else {
-				line = fmt.Sprintf("::warning file=%s,line=%d,endLine=%d,title=Uncovered::Lines %d-%d not covered by tests",
-					annotationPath, r.Start, r.End, r.Start, r.End)
+			for _, sub := range intersectPatchRange(r, patchedLines[annotationPath]) {
+				var line string
+				if sub.Start == sub.End {
+					line = fmt.Sprintf("::warning file=%s,line=%d,title=Uncovered::Line %d not covered by tests",
+						annotationPath, sub.Start, sub.Start)
+				} else {
+					line = fmt.Sprintf("::warning file=%s,line=%d,endLine=%d,title=Uncovered::Lines %d-%d not covered by tests",
+						annotationPath, sub.Start, sub.End, sub.Start, sub.End)
+				}
+				pending = append(pending, pendingAnnotation{line: line, priority: priorityInPatch, size: sub.End - sub.Start + 1})
 			}
-			priority := priorityElsewhere
-			if rangeOverlapsPatch(annotationPath, r, patchedLines) {
-				priority = priorityInPatch
-			}
-			pending = append(pending, pendingAnnotation{line: line, priority: priority, size: r.End - r.Start + 1})
 		}
 	}
 
@@ -828,16 +837,28 @@ func buildAnnotationLines(report *coverage.Report, changedFiles []string, patche
 	return lines
 }
 
-// rangeOverlapsPatch reports whether r shares at least one line with any of
-// the PR diff's added ranges for path. patchedLines is nil when annotations
-// aren't scoped to a PR's changed files at all (show-files != "changed", or
-// there's no PR), in which case this always returns false and ranking falls
-// back to size alone.
-func rangeOverlapsPatch(path string, r comment.LineRange, patchedLines map[string][]diff.LineRange) bool {
-	for _, pr := range patchedLines[path] {
-		if r.Start <= pr.End && pr.Start <= r.End {
-			return true
+// intersectPatchRange returns the portions of r that fall inside patched,
+// the PR diff's added/modified line ranges for r's file: zero, one, or
+// several sub-ranges, since a single run of consecutive uncovered lines can
+// straddle more than one diff hunk, or none. Codecov's own annotations are
+// scoped to the patch the same way (https://docs.codecov.com/docs/commit-status),
+// the same set litecov's own codecov/patch-equivalent status is computed
+// from. patched is nil when annotations aren't scoped to a PR's diff at all
+// (show-files != "changed", no PR, or this file's patch couldn't be parsed),
+// in which case this always returns nil (issue #47).
+func intersectPatchRange(r comment.LineRange, patched []diff.LineRange) []comment.LineRange {
+	var out []comment.LineRange
+	for _, p := range patched {
+		start, end := r.Start, r.End
+		if p.Start > start {
+			start = p.Start
+		}
+		if p.End < end {
+			end = p.End
+		}
+		if start <= end {
+			out = append(out, comment.LineRange{Start: start, End: end})
 		}
 	}
-	return false
+	return out
 }
