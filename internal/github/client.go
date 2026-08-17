@@ -6,8 +6,28 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
+)
+
+// httpClient is shared by every request. The zero-value http.Client used
+// before has no timeout, so a server that accepts the connection and never
+// responds blocks the call forever instead of failing.
+var httpClient = &http.Client{Timeout: 30 * time.Second}
+
+// sleep is retry backoff's wait function, a package var so tests can no-op
+// it instead of paying real exponential-backoff delays.
+var sleep = time.Sleep
+
+const (
+	// maxRetries bounds retry attempts on 5xx and rate-limited responses.
+	maxRetries = 4
+	// baseRetryDelay is the backoff for the first retry; it doubles on each
+	// later attempt when GitHub hasn't told us exactly how long to wait.
+	baseRetryDelay = 1 * time.Second
 )
 
 type Client struct {
@@ -26,19 +46,102 @@ func NewClient(token, owner, repo, baseURL string) *Client {
 	}
 }
 
-func (c *Client) doRequest(method, path string, body io.Reader) (*http.Response, error) {
-	req, err := http.NewRequest(method, c.BaseURL+path, body)
-	if err != nil {
-		return nil, err
+// doRequest sends the request, retrying 5xx responses and rate limiting
+// (429, or 403 with a rate-limit header) per GitHub's best-practices guidance:
+// https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api
+// body is a byte slice rather than an io.Reader because a retried request
+// needs to be re-sent from the start each attempt.
+func (c *Client) doRequest(method, path string, body []byte) (*http.Response, error) {
+	for attempt := 0; ; attempt++ {
+		var bodyReader io.Reader
+		if body != nil {
+			bodyReader = bytes.NewReader(body)
+		}
+
+		req, err := http.NewRequest(method, c.BaseURL+path, bodyReader)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("Authorization", "Bearer "+c.Token)
+		req.Header.Set("Accept", "application/vnd.github.v3+json")
+		req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			return nil, err
+		}
+
+		if attempt >= maxRetries || !shouldRetry(resp) {
+			return resp, nil
+		}
+
+		wait := retryDelay(resp, attempt)
+		resp.Body.Close()
+		sleep(wait)
+	}
+}
+
+// shouldRetry reports whether resp is worth retrying: a server error, or
+// rate limiting rather than a genuine failure.
+func shouldRetry(resp *http.Response) bool {
+	if resp.StatusCode >= 500 && resp.StatusCode < 600 {
+		return true
+	}
+	return isRateLimited(resp)
+}
+
+// isRateLimited reports whether resp signals GitHub rate limiting rather
+// than an ordinary error. 429 always means rate limiting; 403 is ambiguous
+// between rate limiting and a real permissions failure, so it only counts
+// when the response carries the headers GitHub uses for rate limiting.
+func isRateLimited(resp *http.Response) bool {
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return true
+	}
+	if resp.StatusCode != http.StatusForbidden {
+		return false
+	}
+	return resp.Header.Get("Retry-After") != "" || resp.Header.Get("X-RateLimit-Remaining") == "0"
+}
+
+// retryDelay picks how long to wait before the next attempt, preferring
+// GitHub's own timing over a guess: a Retry-After header wins outright, then
+// a reset time when the rate limit is exhausted, and only then a plain
+// exponential backoff with jitter for ordinary server errors.
+func retryDelay(resp *http.Response, attempt int) time.Duration {
+	if ra := resp.Header.Get("Retry-After"); ra != "" {
+		if secs, err := strconv.Atoi(ra); err == nil && secs > 0 {
+			return time.Duration(secs) * time.Second
+		}
 	}
 
-	req.Header.Set("Authorization", "Bearer "+c.Token)
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+	if resp.Header.Get("X-RateLimit-Remaining") == "0" {
+		if reset := resp.Header.Get("X-RateLimit-Reset"); reset != "" {
+			if ts, err := strconv.ParseInt(reset, 10, 64); err == nil {
+				if wait := time.Until(time.Unix(ts, 0)); wait > 0 {
+					return wait
+				}
+			}
+		}
 	}
 
-	return http.DefaultClient.Do(req)
+	backoff := baseRetryDelay << attempt
+	return backoff + time.Duration(rand.Int63n(int64(backoff)))
+}
+
+// apiError builds the error for a non-success response, calling out rate
+// limiting by name so it doesn't read like a permissions failure -- both
+// surface as a 403 with an otherwise identical "GitHub API error" message.
+func apiError(resp *http.Response) error {
+	body, _ := io.ReadAll(resp.Body)
+	if isRateLimited(resp) {
+		return fmt.Errorf("GitHub API rate limit exceeded: %s - %s", resp.Status, string(body))
+	}
+	return fmt.Errorf("GitHub API error: %s - %s", resp.Status, string(body))
 }
 
 // ChangedFile is one entry from a pull request's file diff.
@@ -63,8 +166,7 @@ func (c *Client) GetChangedFiles(prNumber int) ([]ChangedFile, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("GitHub API error: %s - %s", resp.Status, string(body))
+		return nil, apiError(resp)
 	}
 
 	var files []struct {
@@ -97,8 +199,7 @@ func (c *Client) FindExistingComment(prNumber int, marker string) (int, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return 0, fmt.Errorf("GitHub API error: %s - %s", resp.Status, string(body))
+		return 0, apiError(resp)
 	}
 
 	var comments []struct {
@@ -121,15 +222,14 @@ func (c *Client) CreateComment(prNumber int, body string) error {
 	path := fmt.Sprintf("/repos/%s/%s/issues/%d/comments", c.Owner, c.Repo, prNumber)
 	payload, _ := json.Marshal(map[string]string{"body": body})
 
-	resp, err := c.doRequest("POST", path, bytes.NewReader(payload))
+	resp, err := c.doRequest("POST", path, payload)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusCreated {
-		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("GitHub API error: %s - %s", resp.Status, string(respBody))
+		return apiError(resp)
 	}
 	return nil
 }
@@ -138,15 +238,14 @@ func (c *Client) UpdateComment(commentID int, body string) error {
 	path := fmt.Sprintf("/repos/%s/%s/issues/comments/%d", c.Owner, c.Repo, commentID)
 	payload, _ := json.Marshal(map[string]string{"body": body})
 
-	resp, err := c.doRequest("PATCH", path, bytes.NewReader(payload))
+	resp, err := c.doRequest("PATCH", path, payload)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("GitHub API error: %s - %s", resp.Status, string(respBody))
+		return apiError(resp)
 	}
 	return nil
 }
@@ -159,15 +258,14 @@ func (c *Client) SetCommitStatus(sha, state, description, context string) error 
 		"context":     context,
 	})
 
-	resp, err := c.doRequest("POST", path, bytes.NewReader(payload))
+	resp, err := c.doRequest("POST", path, payload)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusCreated {
-		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("GitHub API error: %s - %s", resp.Status, string(respBody))
+		return apiError(resp)
 	}
 	return nil
 }
