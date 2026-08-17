@@ -2,6 +2,7 @@ package comment
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 
@@ -3000,5 +3001,97 @@ func TestFormatDeltaString(t *testing.T) {
 				t.Errorf("expected %q, got %q", tt.expected, result)
 			}
 		})
+	}
+}
+
+// readmeSection returns the text of readme from the h2 heading exactly
+// matching heading up to (not including) the next h2 heading, skipping over
+// any "## "-looking text inside a fenced code block along the way -- the
+// PR Comment sample below embeds a literal "## ... Coverage Report" line, so
+// a naive scan for the next "\n## " would stop there instead of at the
+// section's real end. A fence is tracked by its opening backtick run length
+// alone, not by matching info strings, so a shorter fence nested inside it
+// (the sample's own ```diff block) can't be mistaken for the closing one.
+func readmeSection(t *testing.T, readme, heading string) string {
+	t.Helper()
+
+	lines := strings.Split(readme, "\n")
+	start := -1
+	for i, line := range lines {
+		if line == heading {
+			start = i
+			break
+		}
+	}
+	if start == -1 {
+		t.Fatalf("README.md has no %q section", heading)
+	}
+
+	end := len(lines)
+	fenceLen := 0
+	for i := start + 1; i < len(lines); i++ {
+		line := lines[i]
+		run := len(line) - len(strings.TrimLeft(line, "`"))
+		if fenceLen > 0 {
+			if run >= fenceLen && run == len(line) {
+				fenceLen = 0
+			}
+			continue
+		}
+		if run >= 3 {
+			fenceLen = run
+			continue
+		}
+		if strings.HasPrefix(line, "## ") {
+			end = i
+			break
+		}
+	}
+	return strings.Join(lines[start:end], "\n")
+}
+
+// TestReadmePRCommentSampleMatchesFormat guards issue #81: README.md's "PR
+// Comment" section hand-wrote a sample two format revisions stale (a
+// `| Metric | Value |` table Format hasn't emitted since the Codecov-style
+// rewrite, no Status column) and told readers the :warning: shortcode marks
+// coverage below 50%, when getStatusEmoji uses ❌ there and ⚠️ for 50-79.99%.
+// This renders the same report the README's sample is built from through the
+// real Format() and checks every line of that output still appears in the
+// README section, so a future formatting change fails this test instead of
+// only leaving a doc nobody re-generates.
+func TestReadmePRCommentSampleMatchesFormat(t *testing.T) {
+	readmeBytes, err := os.ReadFile("../../README.md")
+	if err != nil {
+		t.Fatalf("reading README.md: %v", err)
+	}
+	section := readmeSection(t, string(readmeBytes), "## PR Comment")
+
+	if strings.Contains(section, "| Metric | Value |") {
+		t.Error("PR Comment section still shows the pre-Codecov-rewrite `| Metric | Value |` table")
+	}
+	if strings.Contains(section, ":warning:") {
+		t.Error("PR Comment section still uses the :warning: shortcode; the real comment renders ⚠️/❌ glyphs directly")
+	}
+
+	report := &coverage.Report{
+		Files: []coverage.FileCoverage{
+			{Path: "src/parser.go", LinesCovered: 114, LinesTotal: 125, UncoveredLines: []int{45, 46, 47, 102}},
+			{Path: "src/utils.go", LinesCovered: 45, LinesTotal: 100, UncoveredLines: []int{12, 13, 14, 15, 30, 31, 32, 33, 34, 35, 50}},
+		},
+	}
+	report.Calculate()
+	rendered := Format(report, Options{
+		ShowFiles: "all",
+		RepoURL:   "https://github.com/manashmandal/litecov",
+		SHA:       "a1b2c3d",
+	})
+
+	for _, line := range strings.Split(strings.TrimRight(rendered, "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		if !strings.Contains(section, line) {
+			t.Errorf("PR Comment section is missing a line the real Format() output produces: %q", line)
+		}
 	}
 }
