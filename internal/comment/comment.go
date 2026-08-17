@@ -336,6 +336,30 @@ func formatIntDelta(n int) string {
 	return fmt.Sprintf("%+d", n)
 }
 
+// sortImpactedFiles orders files by ascending coverage percentage, worst
+// first, with path as the tiebreaker so files tied on percentage still
+// render in a stable order instead of whatever order sort.Slice's comparator
+// happens to leave them in. Before this, formatImpactedFiles rendered rows
+// in whatever order the coverage parser produced them, which carried no
+// meaning: the worst file could land anywhere in the table, and files
+// findMissingFiles appends always landed at the end regardless of how bad
+// they were (issue #56). A copy is sorted, not files itself, since files is
+// the caller's report.Files or a filtered slice sharing its backing array,
+// the same concern formatUncoveredLines has about UncoveredLines (issue
+// #74).
+func sortImpactedFiles(files []coverage.FileCoverage) []coverage.FileCoverage {
+	sorted := make([]coverage.FileCoverage, len(files))
+	copy(sorted, files)
+	sort.Slice(sorted, func(i, j int) bool {
+		pi, pj := sorted[i].Percentage(), sorted[j].Percentage()
+		if pi != pj {
+			return pi < pj
+		}
+		return sorted[i].Path < sorted[j].Path
+	})
+	return sorted
+}
+
 func formatImpactedFiles(files []coverage.FileCoverage, opts Options) string {
 	if len(files) == 0 {
 		if opts.ShowFiles == "changed" {
@@ -343,6 +367,8 @@ func formatImpactedFiles(files []coverage.FileCoverage, opts Options) string {
 		}
 		return ""
 	}
+
+	files = sortImpactedFiles(files)
 
 	var sb strings.Builder
 
@@ -400,10 +426,32 @@ func formatNoChangedFiles() string {
 	return sb.String()
 }
 
+// sortFileChangesByDelta orders fileChanges by ascending Delta, worst first,
+// with path as the tiebreaker: the comparison-path counterpart of
+// sortImpactedFiles, ranking by coverage change instead of a single
+// percentage. Codecov's own comparison table ranks the same way, most
+// negative first, so the files bleeding coverage sit at the top instead of
+// wherever the parser happened to emit them (issue #56). A copy is sorted,
+// not fileChanges itself, for the same reason sortImpactedFiles copies
+// (issue #74).
+func sortFileChangesByDelta(fileChanges []coverage.FileChange) []coverage.FileChange {
+	sorted := make([]coverage.FileChange, len(fileChanges))
+	copy(sorted, fileChanges)
+	sort.Slice(sorted, func(i, j int) bool {
+		if sorted[i].Delta != sorted[j].Delta {
+			return sorted[i].Delta < sorted[j].Delta
+		}
+		return sorted[i].Path < sorted[j].Path
+	})
+	return sorted
+}
+
 func formatImpactedFilesWithDelta(fileChanges []coverage.FileChange, opts Options) string {
 	if len(fileChanges) == 0 {
 		return ""
 	}
+
+	fileChanges = sortFileChangesByDelta(fileChanges)
 
 	var sb strings.Builder
 

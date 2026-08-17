@@ -1012,6 +1012,118 @@ func TestFormatImpactedFiles_EmptyChanged(t *testing.T) {
 	}
 }
 
+// TestFormatImpactedFiles_SortedByCoverageAscending reproduces issue #56:
+// rows used to render in whatever order the coverage parser produced them.
+// They must come out lowest coverage first, worst file at the top, matching
+// the issue's own repro input.
+func TestFormatImpactedFiles_SortedByCoverageAscending(t *testing.T) {
+	files := []coverage.FileCoverage{
+		{Path: "internal/parser/lcov.go", LinesCovered: 94, LinesTotal: 100},
+		{Path: "internal/coverage/report.go", LinesCovered: 87, LinesTotal: 100},
+		{Path: "internal/comment/format.go", LinesCovered: 72, LinesTotal: 100},
+		{Path: "internal/diff/diff.go", LinesCovered: 45, LinesTotal: 100},
+		{Path: "cmd/litecov/main.go", LinesCovered: 100, LinesTotal: 100},
+	}
+
+	result := formatImpactedFiles(files, Options{})
+
+	wantOrder := []string{
+		"internal/diff/diff.go",       // 45%, worst
+		"internal/comment/format.go",  // 72%
+		"internal/coverage/report.go", // 87%
+		"internal/parser/lcov.go",     // 94%
+		"cmd/litecov/main.go",         // 100%, best
+	}
+	lastIdx := -1
+	for _, path := range wantOrder {
+		idx := strings.Index(result, path)
+		if idx == -1 {
+			t.Fatalf("missing %q in output", path)
+		}
+		if idx < lastIdx {
+			t.Errorf("%q rendered out of order, want lowest coverage first: %s", path, result)
+		}
+		lastIdx = idx
+	}
+}
+
+// TestFormatImpactedFiles_TiebreaksByPath covers the "path name as the
+// tiebreaker" half of issue #56: files tied on coverage percentage must sort
+// alphabetically instead of landing in whatever order sort.Slice's
+// comparator leaves them in.
+func TestFormatImpactedFiles_TiebreaksByPath(t *testing.T) {
+	files := []coverage.FileCoverage{
+		{Path: "z.go", LinesCovered: 50, LinesTotal: 100},
+		{Path: "a.go", LinesCovered: 50, LinesTotal: 100},
+		{Path: "m.go", LinesCovered: 50, LinesTotal: 100},
+	}
+
+	result := formatImpactedFiles(files, Options{})
+
+	aIdx := strings.Index(result, "a.go")
+	mIdx := strings.Index(result, "m.go")
+	zIdx := strings.Index(result, "z.go")
+	if aIdx == -1 || mIdx == -1 || zIdx == -1 {
+		t.Fatalf("missing expected files in output: %s", result)
+	}
+	if !(aIdx < mIdx && mIdx < zIdx) {
+		t.Errorf("files tied on coverage must sort alphabetically by path: %s", result)
+	}
+}
+
+// TestFormatImpactedFiles_DoesNotMutateInput mirrors
+// TestFormatUncoveredLines_DoesNotMutateInput (issue #74): sorting for
+// display must not reorder the report.Files slice the caller still holds.
+func TestFormatImpactedFiles_DoesNotMutateInput(t *testing.T) {
+	files := []coverage.FileCoverage{
+		{Path: "z.go", LinesCovered: 90, LinesTotal: 100},
+		{Path: "a.go", LinesCovered: 10, LinesTotal: 100},
+	}
+	original := []coverage.FileCoverage{
+		{Path: "z.go", LinesCovered: 90, LinesTotal: 100},
+		{Path: "a.go", LinesCovered: 10, LinesTotal: 100},
+	}
+
+	formatImpactedFiles(files, Options{})
+
+	for i, f := range files {
+		if f.Path != original[i].Path {
+			t.Errorf("formatImpactedFiles mutated its input order: got %v, want %v", files, original)
+			break
+		}
+	}
+}
+
+// TestFormat_MissingFilesSortIntoPlace covers the closing complaint in issue
+// #56: files findMissingFiles appends for show-files: changed used to always
+// land at the end of the table, after Format appended them, since nothing
+// sorted the list afterward. A missing file renders at 0% ("no tests"), so
+// it must sort ahead of a well-covered changed file, not trail behind it.
+func TestFormat_MissingFilesSortIntoPlace(t *testing.T) {
+	report := &coverage.Report{
+		Files: []coverage.FileCoverage{
+			{Path: "src/well_tested.go", LinesCovered: 95, LinesTotal: 100},
+		},
+	}
+	report.Calculate()
+
+	opts := Options{
+		ShowFiles:    "changed",
+		ChangedFiles: []string{"src/well_tested.go", "src/new_untested.go"},
+	}
+
+	result := Format(report, opts)
+
+	newIdx := strings.Index(result, "src/new_untested.go")
+	testedIdx := strings.Index(result, "src/well_tested.go")
+	if newIdx == -1 || testedIdx == -1 {
+		t.Fatalf("missing expected files in output: %s", result)
+	}
+	if newIdx > testedIdx {
+		t.Error("the untested file findMissingFiles appended must sort ahead of the well-covered file, not trail behind it")
+	}
+}
+
 func TestFormatFileName(t *testing.T) {
 	t.Run("without hyperlink", func(t *testing.T) {
 		result := formatFileName("test.go", Options{})
@@ -1954,6 +2066,66 @@ func TestFormatImpactedFilesWithDelta_Empty(t *testing.T) {
 	result := formatImpactedFilesWithDelta(nil, Options{})
 	if result != "" {
 		t.Error("expected empty string for no files")
+	}
+}
+
+// TestFormatImpactedFilesWithDelta_SortedByDeltaAscending is the
+// comparison-path counterpart of TestFormatImpactedFiles_SortedByCoverageAscending
+// (issue #56): rows must come out most negative delta first, the file
+// bleeding the most coverage at the top, matching Codecov's own comparison
+// table (spulec/moto#5000, cited in the issue).
+func TestFormatImpactedFilesWithDelta_SortedByDeltaAscending(t *testing.T) {
+	fileChanges := []coverage.FileChange{
+		{Path: "internal/parser/lcov.go", HeadCoverage: 94, BaseCoverage: 92, Delta: 2},
+		{Path: "internal/coverage/report.go", HeadCoverage: 87, BaseCoverage: 90, Delta: -3},
+		{Path: "cmd/litecov/main.go", HeadCoverage: 100, BaseCoverage: 100, Delta: 0},
+		{Path: "internal/comment/format.go", HeadCoverage: 72, BaseCoverage: 72, Delta: 0},
+		{Path: "internal/diff/diff.go", HeadCoverage: 45, BaseCoverage: 55, Delta: -10},
+	}
+
+	result := formatImpactedFilesWithDelta(fileChanges, Options{})
+
+	wantOrder := []string{
+		"internal/diff/diff.go",       // -10%, worst
+		"internal/coverage/report.go", // -3%
+		"cmd/litecov/main.go",         // 0%, tied with format.go, path breaks the tie
+		"internal/comment/format.go",  // 0%
+		"internal/parser/lcov.go",     // +2%, best
+	}
+	lastIdx := -1
+	for _, path := range wantOrder {
+		idx := strings.Index(result, path)
+		if idx == -1 {
+			t.Fatalf("missing %q in output", path)
+		}
+		if idx < lastIdx {
+			t.Errorf("%q rendered out of order, want most negative delta first: %s", path, result)
+		}
+		lastIdx = idx
+	}
+}
+
+// TestFormatImpactedFilesWithDelta_DoesNotMutateInput mirrors
+// TestFormatImpactedFiles_DoesNotMutateInput: sorting for display must not
+// reorder the comp.FileChanges slice the caller still holds (issue #74's
+// concern applied to the comparison path).
+func TestFormatImpactedFilesWithDelta_DoesNotMutateInput(t *testing.T) {
+	fileChanges := []coverage.FileChange{
+		{Path: "z.go", Delta: 5},
+		{Path: "a.go", Delta: -5},
+	}
+	original := []coverage.FileChange{
+		{Path: "z.go", Delta: 5},
+		{Path: "a.go", Delta: -5},
+	}
+
+	formatImpactedFilesWithDelta(fileChanges, Options{})
+
+	for i, fc := range fileChanges {
+		if fc.Path != original[i].Path {
+			t.Errorf("formatImpactedFilesWithDelta mutated its input order: got %v, want %v", fileChanges, original)
+			break
+		}
 	}
 }
 
