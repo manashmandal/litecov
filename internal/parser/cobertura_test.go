@@ -32,6 +32,34 @@ func TestCoberturaParser_Parse(t *testing.T) {
 	}
 }
 
+func TestCoberturaParser_Parse_CoveredLines(t *testing.T) {
+	// issue #6: CoveredLines has to carry the actual hit line numbers, not
+	// just feed LinesCovered's count, since patch coverage intersects a PR
+	// diff's added lines against it. report.Files's order isn't guaranteed
+	// (Parse walks a map), so this looks the file up by path instead of
+	// indexing.
+	xml := `<?xml version="1.0"?>
+<coverage><packages><package name="src"><classes>
+<class name="app" filename="src/app.go"><lines>
+<line number="1" hits="1"/>
+<line number="2" hits="0"/>
+<line number="3" hits="1"/>
+</lines></class>
+</classes></package></packages></coverage>`
+	p := &CoberturaParser{}
+	report, err := p.Parse(strings.NewReader(xml))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if len(report.Files) != 1 {
+		t.Fatalf("got %d files, want 1", len(report.Files))
+	}
+	f := report.Files[0]
+	if len(f.CoveredLines) != 2 || f.CoveredLines[0] != 1 || f.CoveredLines[1] != 3 {
+		t.Errorf("CoveredLines = %v, want [1 3]", f.CoveredLines)
+	}
+}
+
 func TestCoberturaParser_Parse_DuplicateFiles(t *testing.T) {
 	xml := `<?xml version="1.0"?>
 <coverage>
@@ -107,6 +135,13 @@ func TestCoberturaParser_Parse_DuplicateLineAcrossClassesMergesToHit(t *testing.
 	}
 	if len(f.UncoveredLines) != 0 {
 		t.Errorf("UncoveredLines = %v, want none", f.UncoveredLines)
+	}
+	// issue #6: CoveredLines has to reflect the same merged hit/miss OR as
+	// LinesCovered above, not just its count -- patch coverage intersects a
+	// PR diff's added lines against it.
+	if len(f.CoveredLines) != 4 || f.CoveredLines[0] != 1 || f.CoveredLines[1] != 5 ||
+		f.CoveredLines[2] != 12 || f.CoveredLines[3] != 20 {
+		t.Errorf("CoveredLines = %v, want [1 5 12 20]", f.CoveredLines)
 	}
 }
 

@@ -49,6 +49,33 @@ func TestGoProfileParser_Parse(t *testing.T) {
 	}
 }
 
+func TestGoProfileParser_Parse_CoveredLines(t *testing.T) {
+	// issue #6: CoveredLines has to carry the actual hit line numbers, not
+	// just feed LinesCovered's count, since patch coverage intersects a PR
+	// diff's added lines against it.
+	f, err := os.Open("../../testdata/simple.out")
+	if err != nil {
+		t.Fatalf("failed to open test file: %v", err)
+	}
+	defer f.Close()
+
+	p := &GoProfileParser{}
+	report, err := p.Parse(f)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+
+	if len(report.Files[0].CoveredLines) != 3 ||
+		report.Files[0].CoveredLines[0] != 1 ||
+		report.Files[0].CoveredLines[1] != 2 ||
+		report.Files[0].CoveredLines[2] != 4 {
+		t.Errorf("Files[0].CoveredLines = %v, want [1 2 4]", report.Files[0].CoveredLines)
+	}
+	if len(report.Files[1].CoveredLines) != 1 || report.Files[1].CoveredLines[0] != 1 {
+		t.Errorf("Files[1].CoveredLines = %v, want [1]", report.Files[1].CoveredLines)
+	}
+}
+
 func TestGoProfileParser_Parse_IssueRepro(t *testing.T) {
 	// The exact repro from issue #73: a block can span more than one
 	// physical line (10.20,12.3 covers lines 10-12), which is what makes
@@ -184,6 +211,11 @@ src/a.go:3.5,4.2 1 1`
 	}
 	if len(f.UncoveredLines) != 2 || f.UncoveredLines[0] != 1 || f.UncoveredLines[1] != 2 {
 		t.Errorf("UncoveredLines = %v, want [1 2]", f.UncoveredLines)
+	}
+	// issue #6: line 3's hit from the second block must show up in
+	// CoveredLines too, not just LinesCovered's count.
+	if len(f.CoveredLines) != 2 || f.CoveredLines[0] != 3 || f.CoveredLines[1] != 4 {
+		t.Errorf("CoveredLines = %v, want [3 4]", f.CoveredLines)
 	}
 }
 

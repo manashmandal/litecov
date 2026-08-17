@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/manashmandal/litecov/internal/diff"
 	"github.com/manashmandal/litecov/internal/paths"
 )
 
@@ -325,4 +326,113 @@ func findFileInReport(report *Report, path string) *FileCoverage {
 		}
 	}
 	return nil
+}
+
+// PatchCoverage is coverage of only the lines a PR added, as opposed to
+// Report.Coverage's whole-project number or FileCoverage.Percentage's
+// whole-file one. Codecov calls this "patch coverage" and treats it as a
+// PR comment's headline number, because it answers a question project
+// coverage can't: is the code this PR actually wrote tested, independent of
+// how large or how well-tested the rest of the repository already is
+// (https://docs.codecov.com/docs/coverage-percentages).
+type PatchCoverage struct {
+	Covered int
+	Total   int
+}
+
+// Percentage returns p's coverage percentage, or 0 if Total is 0. A Total of
+// 0 means there was nothing coverable to measure -- no PR diff was
+// available, or the diff only touched lines the coverage tool never
+// instruments (blank lines, comments, imports, closing braces) -- the same
+// sentinel FileCoverage.Percentage uses for LinesTotal == 0. Callers that
+// need to tell "nothing to measure" apart from "measured, 0% covered" must
+// check Total == 0 themselves before printing this.
+func (p PatchCoverage) Percentage() float64 {
+	if p.Total == 0 {
+		return 0
+	}
+	return float64(p.Covered) / float64(p.Total) * 100
+}
+
+// CalculatePatchCoverage aggregates patch coverage across every file in
+// report. addedLines is keyed by the path GitHub's PR diff reports for each
+// file (see internal/diff.ParseFilePatch) and holds the new-side line
+// numbers that file's diff added.
+//
+// For each report file, addedLines's line numbers are intersected with the
+// file's coverable lines -- CoveredLines and UncoveredLines together -- to
+// get that file's contribution to Total, and with CoveredLines alone for
+// Covered:
+//
+//	patchTotal   = |addedLines ∩ (CoveredLines ∪ UncoveredLines)|
+//	patchCovered = |addedLines ∩ CoveredLines|
+//
+// Only coverable lines count. A line the diff added but the coverage tool
+// never instrumented -- a blank line, a comment, an import, a closing brace
+// -- shows up in addedLines but in neither CoveredLines nor UncoveredLines,
+// so it contributes to neither Covered nor Total: counting it against Total
+// would make 100% patch coverage unreachable for any real change. Codecov's
+// own success message names this explicitly: "All modified and coverable
+// lines are covered by tests."
+//
+// A file with no coverable added lines -- because addedLines has no entry
+// for it, or because none of its added lines were ever instrumented --
+// contributes 0 to both Covered and Total, the same as not being in the
+// aggregate at all, rather than counting as 0% (see Percentage).
+//
+// addedLines's paths are matched against report's file paths with
+// paths.FindMatchingChangedFile, the same suffix-tolerant matching
+// NewComparison uses, so a prefix difference between the PR diff's paths
+// and the coverage report's doesn't hide a file's patch lines the same way
+// it would hide the file from a changed-files filter (issue #6).
+func CalculatePatchCoverage(report *Report, addedLines map[string][]diff.LineRange) PatchCoverage {
+	var result PatchCoverage
+	if report == nil || len(addedLines) == 0 {
+		return result
+	}
+
+	changedSet := make(map[string]bool, len(addedLines))
+	for path := range addedLines {
+		changedSet[path] = true
+	}
+
+	for i := range report.Files {
+		f := &report.Files[i]
+		matched := paths.FindMatchingChangedFile(f.Path, changedSet)
+		if matched == "" {
+			continue
+		}
+
+		added := addedLineSet(addedLines[matched])
+		if len(added) == 0 {
+			continue
+		}
+
+		for _, ln := range f.CoveredLines {
+			if added[ln] {
+				result.Covered++
+				result.Total++
+			}
+		}
+		for _, ln := range f.UncoveredLines {
+			if added[ln] {
+				result.Total++
+			}
+		}
+	}
+
+	return result
+}
+
+// addedLineSet expands ranges (inclusive Start/End pairs) into a line-number
+// membership set, so intersecting them against a file's CoveredLines and
+// UncoveredLines is a map lookup per line instead of a sorted merge.
+func addedLineSet(ranges []diff.LineRange) map[int]bool {
+	set := make(map[int]bool)
+	for _, r := range ranges {
+		for ln := r.Start; ln <= r.End; ln++ {
+			set[ln] = true
+		}
+	}
+	return set
 }

@@ -571,6 +571,72 @@ diff --git a/file.go b/file.go
 	}
 }
 
+func TestParseFilePatch(t *testing.T) {
+	// issue #6: GitHub's PR files API returns each file's patch as hunks
+	// only, with no "diff --git"/"---"/"+++" header -- everything
+	// TestParseUnifiedDiff's cases above start with. ParseFilePatch has to
+	// make that shape parseable without one.
+	tests := []struct {
+		name     string
+		path     string
+		patch    string
+		expected []LineRange
+	}{
+		{
+			name:     "empty patch",
+			path:     "file.go",
+			patch:    "",
+			expected: nil,
+		},
+		{
+			name: "single hunk, no diff --git header",
+			path: "file.go",
+			patch: `@@ -10,2 +10,4 @@ func foo() {
+ context before
++added line 1
++added line 2
+ context after`,
+			expected: []LineRange{{Start: 11, End: 12}},
+		},
+		{
+			name: "multiple hunks",
+			path: "file.go",
+			patch: `@@ -10,2 +10,3 @@ func foo() {
+ context
++added line
+ context
+@@ -20,1 +22,3 @@ func bar() {
+ context
++another added
++more added`,
+			expected: []LineRange{{Start: 11, End: 11}, {Start: 23, End: 24}},
+		},
+		{
+			name: "path with a space, the case the diff --git header alone is ambiguous for",
+			path: "a file with spaces.go",
+			patch: `@@ -1,1 +1,2 @@
+ context
++added`,
+			expected: []LineRange{{Start: 2, End: 2}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := ParseFilePatch(tt.path, tt.patch)
+
+			if len(result) != len(tt.expected) {
+				t.Fatalf("got %d ranges, want %d: %v", len(result), len(tt.expected), result)
+			}
+			for i, r := range tt.expected {
+				if result[i].Start != r.Start || result[i].End != r.End {
+					t.Errorf("range %d = %+v, want %+v", i, result[i], r)
+				}
+			}
+		})
+	}
+}
+
 func TestLineRange(t *testing.T) {
 	lr := LineRange{Start: 10, End: 20}
 	if lr.Start != 10 {

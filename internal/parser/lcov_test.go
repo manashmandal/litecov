@@ -49,6 +49,33 @@ func TestLCOVParser_Parse(t *testing.T) {
 	}
 }
 
+func TestLCOVParser_Parse_CoveredLines(t *testing.T) {
+	// issue #6: CoveredLines has to carry the actual hit line numbers, not
+	// just feed LinesCovered's count, since patch coverage intersects a PR
+	// diff's added lines against it.
+	f, err := os.Open("../../testdata/simple.lcov")
+	if err != nil {
+		t.Fatalf("failed to open test file: %v", err)
+	}
+	defer f.Close()
+
+	p := &LCOVParser{}
+	report, err := p.Parse(f)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+
+	if len(report.Files[0].CoveredLines) != 3 ||
+		report.Files[0].CoveredLines[0] != 1 ||
+		report.Files[0].CoveredLines[1] != 2 ||
+		report.Files[0].CoveredLines[2] != 4 {
+		t.Errorf("Files[0].CoveredLines = %v, want [1 2 4]", report.Files[0].CoveredLines)
+	}
+	if len(report.Files[1].CoveredLines) != 1 || report.Files[1].CoveredLines[0] != 1 {
+		t.Errorf("Files[1].CoveredLines = %v, want [1]", report.Files[1].CoveredLines)
+	}
+}
+
 func TestLCOVParser_Parse_Empty(t *testing.T) {
 	// Mirrors the repro in issue #68: an empty tracefile has no coverage
 	// data at all, so it must fail with ErrNoCoverageData rather than
@@ -352,6 +379,32 @@ end_of_record`
 	}
 	if len(f.UncoveredLines) != 1 || f.UncoveredLines[0] != 2 {
 		t.Errorf("UncoveredLines = %v, want [2]", f.UncoveredLines)
+	}
+}
+
+func TestLCOVParser_Parse_MergeCoveredLines(t *testing.T) {
+	// issue #6: mergeFileRecord has its own CoveredLines derivation,
+	// separate from finalizeRecord's single-record path, so a duplicate SF:
+	// record (the normal shape of a tracefile assembled from shards) needs
+	// its own check that CoveredLines comes out right too.
+	lcov := `SF:src/app.ts
+DA:1,1
+DA:2,0
+DA:3,0
+end_of_record
+SF:src/app.ts
+DA:1,0
+DA:2,1
+DA:3,0
+end_of_record`
+	p := &LCOVParser{}
+	report, err := p.Parse(strings.NewReader(lcov))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	f := report.Files[0]
+	if len(f.CoveredLines) != 2 || f.CoveredLines[0] != 1 || f.CoveredLines[1] != 2 {
+		t.Errorf("CoveredLines = %v, want [1 2] (hit by at least one record, sorted)", f.CoveredLines)
 	}
 }
 

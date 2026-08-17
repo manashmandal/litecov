@@ -31,6 +31,15 @@ type Options struct {
 	// configured and loaded fine, since that case calls FormatWithComparison
 	// instead of Format.
 	BaseError string
+	// PatchCoverage is the coverage of only the lines this PR added,
+	// computed by coverage.CalculatePatchCoverage from the PR diff
+	// intersected with the report's covered/uncovered line data. Its zero
+	// value (Total == 0) means no patch data was available -- not a PR
+	// build, the changed-files fetch failed, or the diff touched no
+	// coverable line -- and formatPatchString leaves the summary line's
+	// Patch segment out entirely in that case instead of claiming a 0%
+	// that was never measured (issue #6).
+	PatchCoverage coverage.PatchCoverage
 }
 
 func Format(report *coverage.Report, opts Options) string {
@@ -41,7 +50,7 @@ func Format(report *coverage.Report, opts Options) string {
 
 	sb.WriteString(formatHeader(opts))
 	sb.WriteString(formatBaseError(opts))
-	sb.WriteString(formatQuickSummary(report))
+	sb.WriteString(formatQuickSummary(report, opts))
 	sb.WriteString(formatCoverageDiff(report))
 
 	filesToShow := filterFiles(report.Files, opts)
@@ -109,7 +118,7 @@ func FormatWithComparison(comp *coverage.Comparison, opts Options) string {
 	sb.WriteString("\n")
 
 	sb.WriteString(formatHeader(opts))
-	sb.WriteString(formatQuickSummaryWithDelta(comp))
+	sb.WriteString(formatQuickSummaryWithDelta(comp, opts))
 	sb.WriteString(formatCoverageDiffWithComparison(comp, opts))
 	sb.WriteString(formatImpactedFilesWithDelta(comp.FileChanges, opts))
 	sb.WriteString(formatFooter())
@@ -139,20 +148,34 @@ func formatBaseError(opts Options) string {
 		opts.BaseError)
 }
 
-func formatQuickSummary(report *coverage.Report) string {
+func formatQuickSummary(report *coverage.Report, opts Options) string {
 	emoji := getStatusEmoji(report.Coverage)
-	return fmt.Sprintf("> %s **Coverage:** `%.2f%%` | **Lines:** `%d/%d` | **Files:** `%d`\n\n",
-		emoji, report.Coverage, report.TotalCovered, report.TotalLines, len(report.Files))
+	return fmt.Sprintf("> %s **Coverage:** `%.2f%%`%s | **Lines:** `%d/%d` | **Files:** `%d`\n\n",
+		emoji, report.Coverage, formatPatchString(opts.PatchCoverage), report.TotalCovered, report.TotalLines, len(report.Files))
 }
 
-func formatQuickSummaryWithDelta(comp *coverage.Comparison) string {
+func formatQuickSummaryWithDelta(comp *coverage.Comparison, opts Options) string {
 	emoji := getStatusEmoji(comp.Head.Coverage)
 	// A present-but-empty base report leaves nothing to diff against, same
 	// as no base report at all: showing CoverageDelta here would claim an
 	// improvement over a measurement that was never taken (issue #32).
 	delta := formatDeltaString(comp.CoverageDelta, comp.Base != nil && !comp.NoBaseFiles)
-	return fmt.Sprintf("> %s **Coverage:** `%.2f%%`%s | **Lines:** `%d/%d` | **Files:** `%d`\n\n",
-		emoji, comp.Head.Coverage, delta, comp.Head.TotalCovered, comp.Head.TotalLines, len(comp.Head.Files))
+	return fmt.Sprintf("> %s **Coverage:** `%.2f%%`%s%s | **Lines:** `%d/%d` | **Files:** `%d`\n\n",
+		emoji, comp.Head.Coverage, delta, formatPatchString(opts.PatchCoverage), comp.Head.TotalCovered, comp.Head.TotalLines, len(comp.Head.Files))
+}
+
+// formatPatchString renders the summary line's Patch segment: the coverage
+// percentage of only the lines this PR added, Codecov's headline number for
+// a PR comment (https://docs.codecov.com/docs/coverage-percentages). Empty
+// when patch.Total is 0 -- no PR diff was available, or the diff touched no
+// coverable line -- so the summary doesn't claim a measurement that was
+// never taken, the same reasoning formatDeltaString applies to a missing
+// base (issue #6).
+func formatPatchString(patch coverage.PatchCoverage) string {
+	if patch.Total == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" | **Patch:** `%.2f%%`", patch.Percentage())
 }
 
 func formatDeltaString(delta float64, hasBase bool) string {

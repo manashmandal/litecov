@@ -103,15 +103,22 @@ func (p *GoProfileParser) Parse(r io.Reader) (*coverage.Report, error) {
 		hits := lineHits[file]
 		fc := coverage.FileCoverage{Path: file, LinesTotal: len(hits)}
 		var uncovered []int
+		var covered []int
 		for ln, hit := range hits {
 			if hit {
 				fc.LinesCovered++
+				covered = append(covered, ln)
 			} else {
 				uncovered = append(uncovered, ln)
 			}
 		}
 		sort.Ints(uncovered)
+		sort.Ints(covered)
 		fc.UncoveredLines = uncovered
+		// CoveredLines alongside UncoveredLines lets a caller intersect a PR
+		// diff's added lines against both to compute patch coverage, the
+		// same reason LCOVParser and CoberturaParser fill it in (issue #6).
+		fc.CoveredLines = covered
 		report.Files = append(report.Files, fc)
 	}
 

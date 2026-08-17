@@ -9,6 +9,7 @@ import (
 
 	"github.com/manashmandal/litecov/internal/comment"
 	"github.com/manashmandal/litecov/internal/coverage"
+	"github.com/manashmandal/litecov/internal/diff"
 	"github.com/manashmandal/litecov/internal/github"
 	"github.com/manashmandal/litecov/internal/parser"
 	"github.com/manashmandal/litecov/internal/paths"
@@ -118,6 +119,7 @@ func main() {
 	var changedFiles []string
 	var addedFiles map[string]bool
 	var removedFiles map[string]bool
+	var patchedLines map[string][]diff.LineRange
 	if *showFiles == "changed" && prNumber > 0 {
 		var changed []github.ChangedFile
 		changed, err = gh.GetChangedFiles(prNumber)
@@ -140,6 +142,7 @@ func main() {
 		changedFiles = make([]string, len(changed))
 		addedFiles = make(map[string]bool, len(changed))
 		removedFiles = make(map[string]bool, len(changed))
+		patchedLines = make(map[string][]diff.LineRange, len(changed))
 		for i, cf := range changed {
 			normalized := paths.NormalizeCoveragePath(cf.Path)
 			changedFiles[i] = normalized
@@ -148,6 +151,14 @@ func main() {
 			}
 			if cf.IsRemoved {
 				removedFiles[normalized] = true
+			}
+			// cf.Patch is empty for a binary file, a rename with no content
+			// change, or a diff past GitHub's per-file size limit;
+			// ParseFilePatch already treats that as "no coverable changed
+			// lines" and returns nil, so patchedLines just has no entry for
+			// the file rather than a wrong one (issue #6).
+			if lines := diff.ParseFilePatch(normalized, cf.Patch); len(lines) > 0 {
+				patchedLines[normalized] = lines
 			}
 		}
 	}
@@ -163,13 +174,14 @@ func main() {
 
 	repoURL := fmt.Sprintf("https://github.com/%s", repository)
 	opts := comment.Options{
-		Title:        *title,
-		ShowFiles:    *showFiles,
-		ChangedFiles: changedFiles,
-		RepoURL:      repoURL,
-		SHA:          sha,
-		PRNumber:     prNumber,
-		BaseBranch:   *baseBranch,
+		Title:         *title,
+		ShowFiles:     *showFiles,
+		ChangedFiles:  changedFiles,
+		RepoURL:       repoURL,
+		SHA:           sha,
+		PRNumber:      prNumber,
+		BaseBranch:    *baseBranch,
+		PatchCoverage: coverage.CalculatePatchCoverage(report, patchedLines),
 	}
 	if baseErr != nil {
 		opts.BaseError = baseErr.Error()

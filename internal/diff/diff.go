@@ -154,6 +154,31 @@ func ParseUnifiedDiff(diffOutput string) []FileDiff {
 	return result
 }
 
+// ParseFilePatch parses patch, one file's unified diff hunks in the shape
+// GitHub's pull request files API returns them: starting at the first "@@"
+// line, with no "diff --git"/"---"/"+++" header (see
+// github.ChangedFile.Patch). It returns the new-side line numbers the file
+// added, same as ParseUnifiedDiff would return for that file inside a full
+// multi-file diff.
+//
+// path is only there to open a section for ParseUnifiedDiff to walk; the
+// synthesized "diff --git" line's content plays no part in which lines end
+// up in the result; only the "+"/" "/"-" prefixes inside patch's hunk body
+// do. Empty patch returns nil, matching GetChangedFiles's documented
+// contract that an empty Patch means "no coverable changed lines," not an
+// error (issue #6).
+func ParseFilePatch(path, patch string) []LineRange {
+	if patch == "" {
+		return nil
+	}
+	synthetic := "diff --git a/" + path + " b/" + path + "\n" + patch
+	files := ParseUnifiedDiff(synthetic)
+	if len(files) == 0 {
+		return nil
+	}
+	return files[0].AddedLines
+}
+
 // appendAddedLine records new-side line n as added, extending the last range
 // in f.AddedLines when n continues it so a run of consecutive "+" lines
 // collapses into a single range instead of one per line.

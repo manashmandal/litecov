@@ -1,6 +1,10 @@
 package coverage
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/manashmandal/litecov/internal/diff"
+)
 
 func TestFileCoverage_Percentage(t *testing.T) {
 	tests := []struct {
@@ -682,5 +686,186 @@ func TestNewComparison_BaseMatchAmbiguousSuffixSkipped(t *testing.T) {
 	}
 	if headChange.Delta != 0 {
 		t.Errorf("Delta = %v, want 0 (sentinel; an ambiguous match must not compute a delta from either candidate)", headChange.Delta)
+	}
+}
+
+func TestPatchCoverage_Percentage(t *testing.T) {
+	tests := []struct {
+		name     string
+		covered  int
+		total    int
+		expected float64
+	}{
+		{"full coverage", 20, 20, 100.0},
+		{"half coverage", 10, 20, 50.0},
+		{"no coverage", 0, 20, 0.0},
+		{"zero total", 0, 0, 0.0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := PatchCoverage{Covered: tt.covered, Total: tt.total}
+			if got := p.Percentage(); got != tt.expected {
+				t.Errorf("Percentage() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestCalculatePatchCoverage_NilReport(t *testing.T) {
+	result := CalculatePatchCoverage(nil, map[string][]diff.LineRange{"a.go": {{Start: 1, End: 5}}})
+	if result.Total != 0 || result.Covered != 0 {
+		t.Errorf("CalculatePatchCoverage(nil, ...) = %+v, want zero value", result)
+	}
+}
+
+func TestCalculatePatchCoverage_NoAddedLines(t *testing.T) {
+	report := &Report{
+		Files: []FileCoverage{
+			{Path: "a.go", CoveredLines: []int{1, 2}, UncoveredLines: []int{3}},
+		},
+	}
+	result := CalculatePatchCoverage(report, nil)
+	if result.Total != 0 || result.Covered != 0 {
+		t.Errorf("CalculatePatchCoverage(report, nil) = %+v, want zero value (no PR diff data)", result)
+	}
+}
+
+func TestCalculatePatchCoverage_Intersection(t *testing.T) {
+	// issue #6: patchTotal = |addedLines ∩ (CoveredLines ∪ UncoveredLines)|,
+	// patchCovered = |addedLines ∩ CoveredLines|. Lines 1 and 5 are
+	// coverable but outside the diff and must not count.
+	report := &Report{
+		Files: []FileCoverage{
+			{
+				Path:           "a.go",
+				CoveredLines:   []int{1, 2, 4},
+				UncoveredLines: []int{3, 5},
+			},
+		},
+	}
+	addedLines := map[string][]diff.LineRange{
+		"a.go": {{Start: 2, End: 4}}, // added lines 2, 3, 4
+	}
+
+	result := CalculatePatchCoverage(report, addedLines)
+
+	if result.Total != 3 {
+		t.Errorf("Total = %v, want 3 (added lines 2, 3, 4 are all coverable)", result.Total)
+	}
+	if result.Covered != 2 {
+		t.Errorf("Covered = %v, want 2 (added lines 2 and 4 are covered; 3 is not)", result.Covered)
+	}
+}
+
+func TestCalculatePatchCoverage_UninstrumentedAddedLinesExcluded(t *testing.T) {
+	// A blank line, comment, or closing brace shows up in the diff's added
+	// lines but in neither CoveredLines nor UncoveredLines: it must not
+	// count against Total, or 100% patch coverage would be unreachable for
+	// any real change (issue #6).
+	report := &Report{
+		Files: []FileCoverage{
+			{Path: "a.go", CoveredLines: []int{2}, UncoveredLines: nil},
+		},
+	}
+	addedLines := map[string][]diff.LineRange{
+		"a.go": {{Start: 1, End: 3}}, // 1 and 3 are e.g. blank lines/braces, only 2 is instrumented
+	}
+
+	result := CalculatePatchCoverage(report, addedLines)
+
+	if result.Total != 1 {
+		t.Errorf("Total = %v, want 1 (only line 2 is instrumented)", result.Total)
+	}
+	if result.Covered != 1 {
+		t.Errorf("Covered = %v, want 1", result.Covered)
+	}
+}
+
+func TestCalculatePatchCoverage_FileWithNoCoverableAddedLinesExcludedFromAggregate(t *testing.T) {
+	// A docs file with no coverage data at all contributes nothing rather
+	// than dragging the aggregate down as a false 0% (issue #6).
+	report := &Report{
+		Files: []FileCoverage{
+			{Path: "tested.go", CoveredLines: []int{1}, UncoveredLines: nil},
+			{Path: "README.md", CoveredLines: nil, UncoveredLines: nil},
+		},
+	}
+	addedLines := map[string][]diff.LineRange{
+		"tested.go": {{Start: 1, End: 1}},
+		"README.md": {{Start: 1, End: 20}},
+	}
+
+	result := CalculatePatchCoverage(report, addedLines)
+
+	if result.Total != 1 || result.Covered != 1 {
+		t.Errorf("CalculatePatchCoverage = %+v, want {Covered:1 Total:1} (README.md has no coverable lines)", result)
+	}
+	if got := result.Percentage(); got != 100.0 {
+		t.Errorf("Percentage() = %v, want 100.0", got)
+	}
+}
+
+func TestCalculatePatchCoverage_MultipleFilesAggregate(t *testing.T) {
+	report := &Report{
+		Files: []FileCoverage{
+			{Path: "a.go", CoveredLines: []int{1}, UncoveredLines: []int{2}},
+			{Path: "b.go", CoveredLines: []int{10}, UncoveredLines: nil},
+		},
+	}
+	addedLines := map[string][]diff.LineRange{
+		"a.go": {{Start: 1, End: 2}},
+		"b.go": {{Start: 10, End: 10}},
+	}
+
+	result := CalculatePatchCoverage(report, addedLines)
+
+	if result.Total != 3 {
+		t.Errorf("Total = %v, want 3", result.Total)
+	}
+	if result.Covered != 2 {
+		t.Errorf("Covered = %v, want 2", result.Covered)
+	}
+}
+
+func TestCalculatePatchCoverage_PathPrefixMismatchTolerated(t *testing.T) {
+	// addedLines is keyed by the PR diff's paths, which can carry a
+	// different prefix than the coverage report's paths -- the same
+	// reasoning issue #30 applies to NewComparison's base lookup.
+	report := &Report{
+		Files: []FileCoverage{
+			{Path: "/home/runner/work/repo/repo/src/a.go", CoveredLines: []int{1}, UncoveredLines: nil},
+		},
+	}
+	addedLines := map[string][]diff.LineRange{
+		"src/a.go": {{Start: 1, End: 1}},
+	}
+
+	result := CalculatePatchCoverage(report, addedLines)
+
+	if result.Total != 1 || result.Covered != 1 {
+		t.Errorf("CalculatePatchCoverage = %+v, want {Covered:1 Total:1}", result)
+	}
+}
+
+func TestCalculatePatchCoverage_AmbiguousMatchSkipped(t *testing.T) {
+	// Mirrors TestNewComparison_BaseMatchAmbiguousSuffixSkipped: two added
+	// files at different directory depths both suffix-match the same report
+	// path, so paths.FindMatchingChangedFile refuses to pick one and the
+	// file contributes nothing rather than guessing.
+	report := &Report{
+		Files: []FileCoverage{
+			{Path: "github.com/foo/bar/pkg/internal/x.go", CoveredLines: []int{1}, UncoveredLines: nil},
+		},
+	}
+	addedLines := map[string][]diff.LineRange{
+		"internal/x.go":     {{Start: 1, End: 1}},
+		"pkg/internal/x.go": {{Start: 1, End: 1}},
+	}
+
+	result := CalculatePatchCoverage(report, addedLines)
+
+	if result.Total != 0 || result.Covered != 0 {
+		t.Errorf("CalculatePatchCoverage = %+v, want zero value (ambiguous match must not guess)", result)
 	}
 }

@@ -139,28 +139,38 @@ func (p *CoberturaParser) Parse(r io.Reader) (*coverage.Report, error) {
 	return report, nil
 }
 
-// finalizeCoberturaFile derives fc's LinesTotal, LinesCovered and
-// UncoveredLines from lines, the per-line hit map accumulated across every
-// <class> that resolves to fc.Path (see the linesHit comment in Parse).
-// Deriving the totals here, once, instead of incrementing them inside the
-// class/line loop is what collapses a line number repeated across classes
-// into a single entry instead of counting it once per class and letting an
-// earlier class's miss shadow a later class's hit.
+// finalizeCoberturaFile derives fc's LinesTotal, LinesCovered,
+// UncoveredLines and CoveredLines from lines, the per-line hit map
+// accumulated across every <class> that resolves to fc.Path (see the
+// linesHit comment in Parse). Deriving the totals here, once, instead of
+// incrementing them inside the class/line loop is what collapses a line
+// number repeated across classes into a single entry instead of counting it
+// once per class and letting an earlier class's miss shadow a later class's
+// hit.
+//
+// CoveredLines exists alongside UncoveredLines so a caller can intersect a
+// PR diff's added lines against both to compute patch coverage: the added
+// lines that landed in CoveredLines are what's tested, and the union of the
+// two is what's coverable at all (issue #6).
 func finalizeCoberturaFile(fc *coverage.FileCoverage, lines map[int]bool) {
 	covered := 0
 	var uncovered []int
+	var coveredLines []int
 	for lineNum, hit := range lines {
 		if hit {
 			covered++
+			coveredLines = append(coveredLines, lineNum)
 		} else {
 			uncovered = append(uncovered, lineNum)
 		}
 	}
 	sort.Ints(uncovered)
+	sort.Ints(coveredLines)
 
 	fc.LinesTotal = len(lines)
 	fc.LinesCovered = covered
 	fc.UncoveredLines = uncovered
+	fc.CoveredLines = coveredLines
 }
 
 // parseCoberturaLineNumber parses a Cobertura <line> number attribute and

@@ -753,7 +753,7 @@ func TestFormatQuickSummary(t *testing.T) {
 		Files:        make([]coverage.FileCoverage, 10),
 	}
 
-	result := formatQuickSummary(report)
+	result := formatQuickSummary(report, Options{})
 
 	if !strings.Contains(result, "85.00%") {
 		t.Error("missing coverage percentage")
@@ -766,6 +766,28 @@ func TestFormatQuickSummary(t *testing.T) {
 	}
 	if !strings.Contains(result, "\u2705") {
 		t.Error("missing status emoji")
+	}
+	if strings.Contains(result, "Patch") {
+		t.Error("should not show Patch when no patch data was computed")
+	}
+}
+
+func TestFormatQuickSummary_WithPatchCoverage(t *testing.T) {
+	// issue #6: the summary line's Patch segment shows the coverage of only
+	// the lines the PR added, not the whole-project number formatQuickSummary
+	// already prints.
+	report := &coverage.Report{
+		TotalCovered: 850,
+		TotalLines:   1000,
+		Coverage:     85.0,
+		Files:        make([]coverage.FileCoverage, 10),
+	}
+	opts := Options{PatchCoverage: coverage.PatchCoverage{Covered: 17, Total: 20}}
+
+	result := formatQuickSummary(report, opts)
+
+	if !strings.Contains(result, "**Patch:** `85.00%`") {
+		t.Errorf("missing patch coverage segment in %q", result)
 	}
 }
 
@@ -1059,6 +1081,7 @@ func TestFormatQuickSummaryWithDelta(t *testing.T) {
 	tests := []struct {
 		name     string
 		comp     *coverage.Comparison
+		opts     Options
 		contains []string
 		excludes []string
 	}{
@@ -1166,11 +1189,45 @@ func TestFormatQuickSummaryWithDelta(t *testing.T) {
 			contains: []string{"85.00%"},
 			excludes: []string{"(+", "(-"},
 		},
+		{
+			// issue #6: patch coverage renders alongside the delta when both
+			// are available, independent of one another.
+			name: "with patch coverage",
+			comp: &coverage.Comparison{
+				Head: &coverage.Report{
+					TotalCovered: 85,
+					TotalLines:   100,
+					Coverage:     85.0,
+					Files:        make([]coverage.FileCoverage, 5),
+				},
+				Base:          &coverage.Report{Coverage: 80.0},
+				CoverageDelta: 5.0,
+			},
+			opts:     Options{PatchCoverage: coverage.PatchCoverage{Covered: 9, Total: 10}},
+			contains: []string{"85.00%", "(+5.00%)", "**Patch:** `90.00%`"},
+		},
+		{
+			// A patch total of 0 means no patch data was available, not a
+			// genuine 0% patch, so the segment must not appear at all.
+			name: "no patch data",
+			comp: &coverage.Comparison{
+				Head: &coverage.Report{
+					TotalCovered: 85,
+					TotalLines:   100,
+					Coverage:     85.0,
+					Files:        make([]coverage.FileCoverage, 5),
+				},
+				Base:          &coverage.Report{Coverage: 80.0},
+				CoverageDelta: 5.0,
+			},
+			contains: []string{"85.00%"},
+			excludes: []string{"Patch"},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := formatQuickSummaryWithDelta(tt.comp)
+			result := formatQuickSummaryWithDelta(tt.comp, tt.opts)
 
 			for _, check := range tt.contains {
 				if !strings.Contains(result, check) {

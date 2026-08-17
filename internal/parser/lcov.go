@@ -271,29 +271,38 @@ func lineHit(daHit bool, branches map[string]bool) bool {
 	return true
 }
 
-// finalizeRecord derives rec's LinesTotal, LinesCovered and UncoveredLines
-// from lines, the per-line hit map built while scanning rec's DA: records.
-// This is what collapses a line repeated across several DA: records in the
-// same block down to one entry instead of the raw per-record counts, which
-// double count the line in LinesTotal and can still report it as uncovered
-// after a later record hit it. The DA: records are the only source for these
-// totals -- see the LF:/LH: comment above -- so there's nothing else to
-// reconcile them against.
+// finalizeRecord derives rec's LinesTotal, LinesCovered, UncoveredLines and
+// CoveredLines from lines, the per-line hit map built while scanning rec's
+// DA: records. This is what collapses a line repeated across several DA:
+// records in the same block down to one entry instead of the raw per-record
+// counts, which double count the line in LinesTotal and can still report it
+// as uncovered after a later record hit it. The DA: records are the only
+// source for these totals -- see the LF:/LH: comment above -- so there's
+// nothing else to reconcile them against.
+//
+// CoveredLines exists alongside UncoveredLines so a caller can intersect a
+// PR diff's added lines against both to compute patch coverage: the added
+// lines that landed in CoveredLines are what's tested, and the union of the
+// two is what's coverable at all (issue #6).
 func finalizeRecord(rec *coverage.FileCoverage, lines map[int]bool) {
 	covered := 0
 	var uncovered []int
+	var coveredLines []int
 	for lineNum, hit := range lines {
 		if hit {
 			covered++
+			coveredLines = append(coveredLines, lineNum)
 		} else {
 			uncovered = append(uncovered, lineNum)
 		}
 	}
 	sort.Ints(uncovered)
+	sort.Ints(coveredLines)
 
 	rec.LinesTotal = len(lines)
 	rec.LinesCovered = covered
 	rec.UncoveredLines = uncovered
+	rec.CoveredLines = coveredLines
 }
 
 // mergeFileRecord adds rec to report.Files, or, if a prior record already
@@ -318,17 +327,21 @@ func mergeFileRecord(report *coverage.Report, fileIndex map[string]int, lineHits
 
 	linesCovered := 0
 	var uncovered []int
+	var coveredLines []int
 	for lineNum, covered := range merged {
 		if covered {
 			linesCovered++
+			coveredLines = append(coveredLines, lineNum)
 		} else {
 			uncovered = append(uncovered, lineNum)
 		}
 	}
 	sort.Ints(uncovered)
+	sort.Ints(coveredLines)
 
 	existing := &report.Files[idx]
 	existing.LinesTotal = len(merged)
 	existing.LinesCovered = linesCovered
 	existing.UncoveredLines = uncovered
+	existing.CoveredLines = coveredLines
 }
