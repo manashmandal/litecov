@@ -60,7 +60,6 @@ func Format(report *coverage.Report, opts Options) string {
 	sb.WriteString(formatHeader(opts))
 	sb.WriteString(formatBaseError(opts))
 	sb.WriteString(formatQuickSummary(report, opts))
-	sb.WriteString(formatCoverageDiff(report))
 
 	filesToShow := filterFiles(report.Files, opts)
 
@@ -77,6 +76,10 @@ func Format(report *coverage.Report, opts Options) string {
 	}
 
 	sb.WriteString(formatImpactedFiles(filesToShow, opts))
+	// Collapsed and last, matching Codecov: the status line and the files
+	// table above are what a reviewer needs without clicking anything, so
+	// only this supporting diff block goes behind a <details> (issue #21).
+	sb.WriteString(formatCoverageDiff(report))
 
 	sb.WriteString(formatFooter())
 
@@ -128,8 +131,9 @@ func FormatWithComparison(comp *coverage.Comparison, opts Options) string {
 
 	sb.WriteString(formatHeader(opts))
 	sb.WriteString(formatQuickSummaryWithDelta(comp, opts))
-	sb.WriteString(formatCoverageDiffWithComparison(comp, opts))
 	sb.WriteString(formatImpactedFilesWithDelta(comp.FileChanges, opts))
+	// Collapsed and last, same ordering as Format (issue #21).
+	sb.WriteString(formatCoverageDiffWithComparison(comp, opts))
 	sb.WriteString(formatFooter())
 
 	return sb.String()
@@ -214,7 +218,7 @@ func formatCoverageDiff(report *coverage.Report) string {
 	var sb strings.Builder
 
 	sb.WriteString("<details>\n")
-	sb.WriteString("<summary>Coverage Diff</summary>\n\n")
+	sb.WriteString("<summary>Additional details and impacted files</summary>\n\n")
 	sb.WriteString("```diff\n")
 	sb.WriteString("@@         Coverage Summary            @@\n")
 	sb.WriteString("==========================================\n")
@@ -232,7 +236,7 @@ func formatCoverageDiffWithComparison(comp *coverage.Comparison, opts Options) s
 	var sb strings.Builder
 
 	sb.WriteString("<details>\n")
-	sb.WriteString("<summary>Coverage Diff</summary>\n\n")
+	sb.WriteString("<summary>Additional details and impacted files</summary>\n\n")
 	sb.WriteString("```diff\n")
 
 	baseBranch := opts.BaseBranch
@@ -342,8 +346,10 @@ func formatImpactedFiles(files []coverage.FileCoverage, opts Options) string {
 
 	var sb strings.Builder
 
-	sb.WriteString("<details>\n")
-	sb.WriteString(fmt.Sprintf("<summary>Impacted Files (%d)</summary>\n\n", len(files)))
+	// Rendered inline, not behind a click: Codecov keeps its per-file table
+	// visible and collapses only the supporting Coverage Diff block, which
+	// formatCoverageDiff renders separately at the bottom (issue #21).
+	sb.WriteString(fmt.Sprintf("**Impacted Files (%d)**\n\n", len(files)))
 	sb.WriteString("| File | Coverage | Uncovered Lines | Status |\n")
 	sb.WriteString("|------|----------|-----------------|--------|\n")
 
@@ -375,7 +381,7 @@ func formatImpactedFiles(files []coverage.FileCoverage, opts Options) string {
 		sb.WriteString(fmt.Sprintf("| %s | %s | %s | %s |\n", fileName, coverageStr, uncoveredStr, emoji))
 	}
 
-	sb.WriteString("\n</details>\n\n")
+	sb.WriteString("\n")
 
 	return sb.String()
 }
@@ -388,10 +394,8 @@ func formatImpactedFiles(files []coverage.FileCoverage, opts Options) string {
 func formatNoChangedFiles() string {
 	var sb strings.Builder
 
-	sb.WriteString("<details>\n")
-	sb.WriteString("<summary>Impacted Files (0)</summary>\n\n")
+	sb.WriteString("**Impacted Files (0)**\n\n")
 	sb.WriteString("No changed files matched the coverage report.\n\n")
-	sb.WriteString("</details>\n\n")
 
 	return sb.String()
 }
@@ -403,8 +407,7 @@ func formatImpactedFilesWithDelta(fileChanges []coverage.FileChange, opts Option
 
 	var sb strings.Builder
 
-	sb.WriteString("<details>\n")
-	sb.WriteString(fmt.Sprintf("<summary>Impacted Files (%d)</summary>\n\n", len(fileChanges)))
+	sb.WriteString(fmt.Sprintf("**Impacted Files (%d)**\n\n", len(fileChanges)))
 	sb.WriteString("| File | Coverage | \u0394 | Status |\n")
 	sb.WriteString("|------|----------|---|--------|\n")
 
@@ -448,7 +451,7 @@ func formatImpactedFilesWithDelta(fileChanges []coverage.FileChange, opts Option
 		sb.WriteString(fmt.Sprintf("| %s | %s | %s | %s |\n", fileName, coverageStr, deltaStr, emoji))
 	}
 
-	sb.WriteString("\n</details>\n\n")
+	sb.WriteString("\n")
 
 	return sb.String()
 }

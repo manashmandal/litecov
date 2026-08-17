@@ -33,7 +33,7 @@ func TestFormat(t *testing.T) {
 		"src/utils.go",
 		Marker,
 		"<details>",
-		"Coverage Diff",
+		"Additional details and impacted files",
 		"Impacted Files (2)",
 		"\u26A0\uFE0F", // warning emoji
 		"\u274C",       // x emoji
@@ -45,6 +45,40 @@ func TestFormat(t *testing.T) {
 		if !strings.Contains(result, check) {
 			t.Errorf("missing %q in output", check)
 		}
+	}
+}
+
+// TestFormat_ImpactedFilesNotCollapsed reproduces issue #21: every number in
+// the report used to render behind a collapsed <details> block, so a
+// reviewer needed two clicks to see which file lost coverage. The Impacted
+// Files table must be visible without expanding anything; only the
+// supporting Coverage Diff block stays collapsed, and it must come after the
+// table, not before it.
+func TestFormat_ImpactedFilesNotCollapsed(t *testing.T) {
+	report := &coverage.Report{
+		Files: []coverage.FileCoverage{
+			{Path: "src/a.go", LinesCovered: 90, LinesTotal: 100},
+		},
+		TotalCovered: 90,
+		TotalLines:   100,
+		Coverage:     90.0,
+	}
+
+	result := Format(report, Options{Title: "Coverage Report", ShowFiles: "all"})
+
+	filesIdx := strings.Index(result, "Impacted Files (1)")
+	if filesIdx == -1 {
+		t.Fatal("missing Impacted Files section")
+	}
+	detailsIdx := strings.Index(result, "<details>")
+	if detailsIdx == -1 {
+		t.Fatal("missing collapsed section")
+	}
+	if filesIdx > detailsIdx {
+		t.Error("Impacted Files table must render before the collapsed <details> block, not inside it")
+	}
+	if !strings.Contains(result[:detailsIdx], "src/a.go") {
+		t.Error("file row must be visible before the collapsed section, not hidden inside it")
 	}
 }
 
@@ -804,7 +838,7 @@ func TestFormatCoverageDiff(t *testing.T) {
 	if !strings.Contains(result, "<details>") {
 		t.Error("missing details tag")
 	}
-	if !strings.Contains(result, "Coverage Diff") {
+	if !strings.Contains(result, "Additional details and impacted files") {
 		t.Error("missing summary")
 	}
 	if !strings.Contains(result, "```diff") {
@@ -829,6 +863,10 @@ func TestFormatImpactedFiles(t *testing.T) {
 
 	if !strings.Contains(result, "Impacted Files (2)") {
 		t.Error("missing impacted files count")
+	}
+	// Issue #21: the table must render inline, not behind a <details> click.
+	if strings.Contains(result, "<details>") {
+		t.Error("Impacted Files table should not be collapsed behind <details>")
 	}
 	if !strings.Contains(result, "file1.go") {
 		t.Error("missing file1")
@@ -922,6 +960,10 @@ func TestFormatImpactedFiles_EmptyChanged(t *testing.T) {
 	}
 	if !strings.Contains(result, "No changed files matched the coverage report.") {
 		t.Error("missing explanation that no changed files matched")
+	}
+	// Issue #21: this section must not be collapsed either.
+	if strings.Contains(result, "<details>") {
+		t.Error("empty Impacted Files section should not be collapsed behind <details>")
 	}
 }
 
@@ -1066,6 +1108,39 @@ func TestFormatWithComparison(t *testing.T) {
 		if !strings.Contains(result, check) {
 			t.Errorf("missing %q in output", check)
 		}
+	}
+}
+
+// TestFormatWithComparison_ImpactedFilesNotCollapsed is the comparison-path
+// counterpart of TestFormat_ImpactedFilesNotCollapsed (issue #21): the
+// Impacted Files table must render before the collapsed Coverage Diff
+// block here too.
+func TestFormatWithComparison_ImpactedFilesNotCollapsed(t *testing.T) {
+	head := &coverage.Report{
+		Files: []coverage.FileCoverage{
+			{Path: "src/a.go", LinesCovered: 90, LinesTotal: 100},
+		},
+		TotalCovered: 90,
+		TotalLines:   100,
+		Coverage:     90.0,
+	}
+	comp := coverage.NewComparison(head, nil, nil, nil, nil)
+
+	result := FormatWithComparison(comp, Options{Title: "Coverage Report"})
+
+	filesIdx := strings.Index(result, "Impacted Files (1)")
+	if filesIdx == -1 {
+		t.Fatal("missing Impacted Files section")
+	}
+	detailsIdx := strings.Index(result, "<details>")
+	if detailsIdx == -1 {
+		t.Fatal("missing collapsed section")
+	}
+	if filesIdx > detailsIdx {
+		t.Error("Impacted Files table must render before the collapsed <details> block, not inside it")
+	}
+	if !strings.Contains(result[:detailsIdx], "src/a.go") {
+		t.Error("file row must be visible before the collapsed section, not hidden inside it")
 	}
 }
 
@@ -1506,6 +1581,10 @@ func TestFormatImpactedFilesWithDelta(t *testing.T) {
 		if !strings.Contains(result, check) {
 			t.Errorf("missing %q in output", check)
 		}
+	}
+	// Issue #21: the table must render inline, not behind a <details> click.
+	if strings.Contains(result, "<details>") {
+		t.Error("Impacted Files table should not be collapsed behind <details>")
 	}
 }
 
