@@ -50,15 +50,23 @@ func NewClient(token, owner, repo, baseURL string) *Client {
 // (429, or 403 with a rate-limit header) per GitHub's best-practices guidance:
 // https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api
 // body is a byte slice rather than an io.Reader because a retried request
-// needs to be re-sent from the start each attempt.
+// needs to be re-sent from the start each attempt. path is normally relative
+// to c.BaseURL, but a caller walking a paginated response (issue #76) passes
+// the full "next" URL GitHub returned instead, which is used as-is rather
+// than appended to BaseURL a second time.
 func (c *Client) doRequest(method, path string, body []byte) (*http.Response, error) {
+	reqURL := path
+	if !strings.HasPrefix(path, "http://") && !strings.HasPrefix(path, "https://") {
+		reqURL = c.BaseURL + path
+	}
+
 	for attempt := 0; ; attempt++ {
 		var bodyReader io.Reader
 		if body != nil {
 			bodyReader = bytes.NewReader(body)
 		}
 
-		req, err := http.NewRequest(method, c.BaseURL+path, bodyReader)
+		req, err := http.NewRequest(method, reqURL, bodyReader)
 		if err != nil {
 			return nil, err
 		}
@@ -157,36 +165,85 @@ type ChangedFile struct {
 	Patch string
 }
 
-func (c *Client) GetChangedFiles(prNumber int) ([]ChangedFile, error) {
-	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/files", c.Owner, c.Repo, prNumber)
-	resp, err := c.doRequest("GET", path, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
+const (
+	// changedFilesPerPage is the page size requested for GetChangedFiles.
+	// GitHub's default is 30 files/page, which without an explicit
+	// per_page silently truncated any PR touching more than 30 files
+	// (issue #76).
+	changedFilesPerPage = 100
+	// maxChangedFilesPages bounds pagination to GitHub's own documented
+	// ceiling for this endpoint ("Responses include a maximum of 3000
+	// files"), 30 pages at 100 files each. Guards against looping forever
+	// if a Link header were ever to point back at a page already seen.
+	maxChangedFilesPages = 30
+)
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, apiError(resp)
-	}
-
-	var files []struct {
-		Filename string `json:"filename"`
-		Status   string `json:"status"`
-		Patch    string `json:"patch"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&files); err != nil {
-		return nil, err
-	}
-
-	result := make([]ChangedFile, len(files))
-	for i, f := range files {
-		result[i] = ChangedFile{
-			Path:      f.Filename,
-			IsAdded:   f.Status == "added",
-			IsRemoved: f.Status == "removed",
-			Patch:     f.Patch,
+// nextPageLink extracts the "next" URL from a GitHub Link header (RFC 5988),
+// or "" once there's no next page. A paginated response's header looks like:
+//
+//	<https://api.github.com/...?page=2>; rel="next", <https://api.github.com/...?page=4>; rel="last"
+func nextPageLink(header string) string {
+	for _, part := range strings.Split(header, ",") {
+		segments := strings.Split(part, ";")
+		if len(segments) < 2 {
+			continue
+		}
+		link := strings.TrimSpace(segments[0])
+		link = strings.TrimPrefix(link, "<")
+		link = strings.TrimSuffix(link, ">")
+		for _, seg := range segments[1:] {
+			if strings.TrimSpace(seg) == `rel="next"` {
+				return link
+			}
 		}
 	}
+	return ""
+}
+
+// GetChangedFiles returns every file touched by the pull request, following
+// GitHub's pagination until it stops sending a "next" link. The endpoint
+// defaults to 30 files/page, so reading only the first page (as this used
+// to) silently dropped everything past file 30 on larger PRs (issue #76).
+func (c *Client) GetChangedFiles(prNumber int) ([]ChangedFile, error) {
+	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/files?per_page=%d", c.Owner, c.Repo, prNumber, changedFilesPerPage)
+
+	var result []ChangedFile
+	for page := 0; path != "" && page < maxChangedFilesPages; page++ {
+		resp, err := c.doRequest("GET", path, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			err := apiError(resp)
+			resp.Body.Close()
+			return nil, err
+		}
+
+		var files []struct {
+			Filename string `json:"filename"`
+			Status   string `json:"status"`
+			Patch    string `json:"patch"`
+		}
+		decodeErr := json.NewDecoder(resp.Body).Decode(&files)
+		next := resp.Header.Get("Link")
+		resp.Body.Close()
+		if decodeErr != nil {
+			return nil, decodeErr
+		}
+
+		for _, f := range files {
+			result = append(result, ChangedFile{
+				Path:      f.Filename,
+				IsAdded:   f.Status == "added",
+				IsRemoved: f.Status == "removed",
+				Patch:     f.Patch,
+			})
+		}
+
+		path = nextPageLink(next)
+	}
+
 	return result, nil
 }
 

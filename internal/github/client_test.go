@@ -2,10 +2,12 @@ package github
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -24,6 +26,11 @@ func TestClient_GetChangedFiles(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/repos/owner/repo/pulls/1/files" {
 			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		// issue #76: per_page must be sent explicitly so a PR doesn't fall
+		// back to GitHub's 30-file-per-page default.
+		if got := r.URL.Query().Get("per_page"); got != "100" {
+			t.Errorf("per_page = %q, want %q", got, "100")
 		}
 		if r.Header.Get("Authorization") != "Bearer test-token" {
 			t.Errorf("unexpected auth header: %s", r.Header.Get("Authorization"))
@@ -94,6 +101,116 @@ func TestClient_GetChangedFiles(t *testing.T) {
 	// an error, so callers can treat it as "no coverable changed lines".
 	if files[3].Patch != "" {
 		t.Errorf("files[3].Patch = %q, want empty string for a file with no patch key", files[3].Patch)
+	}
+}
+
+// TestClient_GetChangedFiles_Paginates covers issue #76's verified repro: the
+// PR files endpoint returns files 30 at a time by default, and reading only
+// the first page silently dropped everything past file 30 on a larger PR.
+// GetChangedFiles must now follow the Link "next" header until GitHub stops
+// sending one, across a PR that needs more than one page at the 100/page
+// this now requests.
+func TestClient_GetChangedFiles_Paginates(t *testing.T) {
+	const totalFiles = 120
+	const perPage = 100
+
+	var requests int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requests, 1)
+
+		if got := r.URL.Query().Get("per_page"); got != strconv.Itoa(perPage) {
+			t.Errorf("per_page = %q, want %q", got, strconv.Itoa(perPage))
+		}
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		if page == 0 {
+			page = 1
+		}
+
+		start := (page - 1) * perPage
+		end := start + perPage
+		if end > totalFiles {
+			end = totalFiles
+		}
+
+		files := make([]struct {
+			Filename string `json:"filename"`
+			Status   string `json:"status"`
+		}, 0, end-start)
+		for i := start; i < end; i++ {
+			files = append(files, struct {
+				Filename string `json:"filename"`
+				Status   string `json:"status"`
+			}{Filename: fmt.Sprintf("file%d.go", i), Status: "modified"})
+		}
+
+		if end < totalFiles {
+			next := fmt.Sprintf("http://%s%s?page=%d&per_page=%d", r.Host, r.URL.Path, page+1, perPage)
+			w.Header().Set("Link", fmt.Sprintf(`<%s>; rel="next"`, next))
+		}
+		json.NewEncoder(w).Encode(files)
+	}))
+	defer server.Close()
+
+	client := &Client{Token: "test-token", Owner: "owner", Repo: "repo", BaseURL: server.URL}
+
+	files, err := client.GetChangedFiles(1)
+	if err != nil {
+		t.Fatalf("GetChangedFiles() error = %v", err)
+	}
+	if len(files) != totalFiles {
+		t.Errorf("got %d files, want %d (a PR spanning more than one page)", len(files), totalFiles)
+	}
+	if got := atomic.LoadInt32(&requests); got != 2 {
+		t.Errorf("server received %d requests, want 2 (120 files at 100/page)", got)
+	}
+	if len(files) == totalFiles {
+		if files[0].Path != "file0.go" {
+			t.Errorf("files[0].Path = %q, want file0.go", files[0].Path)
+		}
+		wantLast := fmt.Sprintf("file%d.go", totalFiles-1)
+		if files[totalFiles-1].Path != wantLast {
+			t.Errorf("files[%d].Path = %q, want %q", totalFiles-1, files[totalFiles-1].Path, wantLast)
+		}
+	}
+}
+
+// TestNextPageLink covers the Link-header parsing GetChangedFiles' pagination
+// depends on (issue #76): picking out the "next" URL among possibly several
+// rel values, and returning "" once GitHub stops sending one.
+func TestNextPageLink(t *testing.T) {
+	tests := []struct {
+		name   string
+		header string
+		want   string
+	}{
+		{
+			name:   "next among next and last",
+			header: `<https://api.github.com/repos/o/r/pulls/1/files?page=2&per_page=100>; rel="next", <https://api.github.com/repos/o/r/pulls/1/files?page=3&per_page=100>; rel="last"`,
+			want:   "https://api.github.com/repos/o/r/pulls/1/files?page=2&per_page=100",
+		},
+		{
+			name:   "last page has prev and first but no next",
+			header: `<https://api.github.com/repos/o/r/pulls/1/files?page=2&per_page=100>; rel="prev", <https://api.github.com/repos/o/r/pulls/1/files?page=1&per_page=100>; rel="first"`,
+			want:   "",
+		},
+		{
+			name:   "single page has no Link header at all",
+			header: "",
+			want:   "",
+		},
+		{
+			name:   "next with no other rel values",
+			header: `<https://api.github.com/repos/o/r/pulls/1/files?page=2>; rel="next"`,
+			want:   "https://api.github.com/repos/o/r/pulls/1/files?page=2",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := nextPageLink(tt.header); got != tt.want {
+				t.Errorf("nextPageLink(%q) = %q, want %q", tt.header, got, tt.want)
+			}
+		})
 	}
 }
 
