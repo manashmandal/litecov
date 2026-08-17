@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -49,6 +50,7 @@ func main() {
 	token := os.Getenv("GITHUB_TOKEN")
 	repository := os.Getenv("GITHUB_REPOSITORY")
 	eventPath := os.Getenv("GITHUB_EVENT_PATH")
+	eventName := os.Getenv("GITHUB_EVENT_NAME")
 	sha := os.Getenv("GITHUB_SHA")
 	// GITHUB_API_URL and GITHUB_SERVER_URL are "https://api.github.com" and
 	// "https://github.com" on github.com runners, but point at the
@@ -68,7 +70,7 @@ func main() {
 	}
 	owner, repo := parts[0], parts[1]
 
-	prNumber, err := getPRNumber(eventPath)
+	prNumber, err := getPRNumber(eventPath, eventName)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to get PR number: %v\n", err)
 		os.Exit(1)
@@ -389,7 +391,34 @@ func resolveGitHubHost(envValue, defaultValue string) string {
 	return defaultValue
 }
 
-func getPRNumber(eventPath string) (int, error) {
+// gitHubEventPayload is the subset of a GitHub Actions event payload that
+// carries a pull request number. Where that number lives depends on the
+// event type: a top-level "number" for pull_request and
+// pull_request_target, "pull_request.number" for pull_request_review, and
+// "check_suite.pull_requests[0].number" for check_suite.
+type gitHubEventPayload struct {
+	Number      int `json:"number"`
+	PullRequest struct {
+		Number int `json:"number"`
+	} `json:"pull_request"`
+	CheckSuite struct {
+		PullRequests []struct {
+			Number int `json:"number"`
+		} `json:"pull_requests"`
+	} `json:"check_suite"`
+}
+
+// getPRNumber reads the PR number out of the GITHUB_EVENT_PATH payload,
+// picking the field named eventName's shape (GITHUB_EVENT_NAME) puts it in
+// rather than scanning the raw JSON text for the first "number" key. The
+// text scan it replaces, strings.Index(content, `"number":`), returned
+// whichever "number" appeared first in the payload -- wrong for an event
+// like "milestone" whose "milestone.number" sits ahead of the pull request's
+// own top-level "number" -- and missed the key entirely when GitHub's
+// pretty-printed JSON put whitespace before the colon, `"number" : 42`
+// instead of `"number":42`, leaving prNumber at 0 and the comment silently
+// skipped on an otherwise green run (issue #53).
+func getPRNumber(eventPath, eventName string) (int, error) {
 	if eventPath == "" {
 		return 0, nil
 	}
@@ -398,21 +427,22 @@ func getPRNumber(eventPath string) (int, error) {
 		return 0, nil
 	}
 
-	content := string(data)
-	if idx := strings.Index(content, `"number":`); idx >= 0 {
-		start := idx + 9
-		for start < len(content) && (content[start] == ' ' || content[start] == '\t') {
-			start++
-		}
-		end := start
-		for end < len(content) && content[end] >= '0' && content[end] <= '9' {
-			end++
-		}
-		if end > start {
-			return strconv.Atoi(content[start:end])
-		}
+	var event gitHubEventPayload
+	if err := json.Unmarshal(data, &event); err != nil {
+		return 0, nil
 	}
-	return 0, nil
+
+	switch eventName {
+	case "pull_request_review":
+		return event.PullRequest.Number, nil
+	case "check_suite":
+		if len(event.CheckSuite.PullRequests) > 0 {
+			return event.CheckSuite.PullRequests[0].Number, nil
+		}
+		return 0, nil
+	default:
+		return event.Number, nil
+	}
 }
 
 // normalizeReportPaths rewrites every file path in files so coverage-tool

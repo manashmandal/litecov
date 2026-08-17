@@ -301,6 +301,107 @@ func TestResolveGitHubHost(t *testing.T) {
 	}
 }
 
+// TestGetPRNumber reproduces issue #53: getPRNumber used to find the PR
+// number by scanning the raw event JSON for the first `"number":` substring,
+// which picked up whichever nested object's number happened to appear first
+// in the payload and missed the key entirely when GitHub's pretty-printed
+// JSON put whitespace before the colon.
+func TestGetPRNumber(t *testing.T) {
+	tests := []struct {
+		name      string
+		eventName string
+		content   string
+		want      int
+	}{
+		{
+			name:      "pull_request: top-level number",
+			eventName: "pull_request",
+			content:   `{"action":"opened","number":42,"pull_request":{"number":42}}`,
+			want:      42,
+		},
+		{
+			name:      "pull_request_target: same shape as pull_request",
+			eventName: "pull_request_target",
+			content:   `{"action":"opened","number":42,"pull_request":{"number":42}}`,
+			want:      42,
+		},
+		{
+			name:      "a nested object's number ahead of the top-level one no longer wins, from the issue's repro",
+			eventName: "milestone",
+			content:   `{"action":"opened","milestone":{"number":7,"title":"v2.0"},"number":42,"pull_request":{"number":42}}`,
+			want:      42,
+		},
+		{
+			name:      "whitespace before the colon is no longer missed, from the issue's repro",
+			eventName: "pull_request",
+			content:   "{\n  \"action\" : \"opened\",\n  \"number\" : 42,\n  \"pull_request\" : { \"number\" : 42 }\n}",
+			want:      42,
+		},
+		{
+			name:      "a number-like string in the PR title is not mistaken for the key",
+			eventName: "pull_request",
+			content:   `{"action":"opened","pull_request":{"title":"fix \"number\": 999999 parsing","number":42},"number":42}`,
+			want:      42,
+		},
+		{
+			name:      "pull_request_review: nested under pull_request.number",
+			eventName: "pull_request_review",
+			content:   `{"action":"submitted","review":{"id":1},"pull_request":{"number":42}}`,
+			want:      42,
+		},
+		{
+			name:      "check_suite: nested under check_suite.pull_requests[0].number",
+			eventName: "check_suite",
+			content:   `{"action":"completed","check_suite":{"pull_requests":[{"number":42}]}}`,
+			want:      42,
+		},
+		{
+			name:      "check_suite with no associated pull requests",
+			eventName: "check_suite",
+			content:   `{"action":"completed","check_suite":{"pull_requests":[]}}`,
+			want:      0,
+		},
+		{
+			name:      "push: no PR number in the payload at all",
+			eventName: "push",
+			content:   `{"ref":"refs/heads/main","commits":[]}`,
+			want:      0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "event.json")
+			if err := os.WriteFile(path, []byte(tt.content), 0644); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+
+			got, err := getPRNumber(path, tt.eventName)
+			if err != nil {
+				t.Fatalf("getPRNumber returned an error: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("getPRNumber(%q, %q) = %d, want %d", tt.content, tt.eventName, got, tt.want)
+			}
+		})
+	}
+
+	t.Run("empty event path", func(t *testing.T) {
+		got, err := getPRNumber("", "pull_request")
+		if err != nil || got != 0 {
+			t.Errorf("getPRNumber(\"\", ...) = (%d, %v), want (0, nil)", got, err)
+		}
+	})
+
+	t.Run("missing event file", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "does-not-exist.json")
+		got, err := getPRNumber(path, "pull_request")
+		if err != nil || got != 0 {
+			t.Errorf("getPRNumber(missing) = (%d, %v), want (0, nil)", got, err)
+		}
+	})
+}
+
 func TestLoadBaseReport_NoReport(t *testing.T) {
 	// An empty path is the only case where (nil, nil) is correct: no base
 	// comparison was requested at all. Every other way loadBaseReport can
