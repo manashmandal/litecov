@@ -193,19 +193,37 @@ func TestClient_SetCommitStatus(t *testing.T) {
 	}
 }
 
+// TestNewClient covers issue #49: NewClient used to hardcode BaseURL to
+// api.github.com, which meant an enterprise host's token was always sent to
+// github.com's API instead. The base URL is now the caller's responsibility
+// (main.go resolves it from GITHUB_API_URL), so NewClient must just carry
+// whatever it's given, github.com default or GitHub Enterprise Server host
+// alike, through unchanged.
 func TestNewClient(t *testing.T) {
-	c := NewClient("token", "owner", "repo")
-	if c.Token != "token" {
-		t.Errorf("Token = %v, want token", c.Token)
+	tests := []struct {
+		name    string
+		baseURL string
+	}{
+		{name: "github.com default", baseURL: "https://api.github.com"},
+		{name: "GitHub Enterprise Server host", baseURL: "https://ghe.example.com/api/v3"},
 	}
-	if c.Owner != "owner" {
-		t.Errorf("Owner = %v, want owner", c.Owner)
-	}
-	if c.Repo != "repo" {
-		t.Errorf("Repo = %v, want repo", c.Repo)
-	}
-	if c.BaseURL != "https://api.github.com" {
-		t.Errorf("BaseURL = %v, want https://api.github.com", c.BaseURL)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := NewClient("token", "owner", "repo", tt.baseURL)
+			if c.Token != "token" {
+				t.Errorf("Token = %v, want token", c.Token)
+			}
+			if c.Owner != "owner" {
+				t.Errorf("Owner = %v, want owner", c.Owner)
+			}
+			if c.Repo != "repo" {
+				t.Errorf("Repo = %v, want repo", c.Repo)
+			}
+			if c.BaseURL != tt.baseURL {
+				t.Errorf("BaseURL = %v, want %v", c.BaseURL, tt.baseURL)
+			}
+		})
 	}
 }
 

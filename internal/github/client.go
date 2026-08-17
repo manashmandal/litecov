@@ -17,12 +17,12 @@ type Client struct {
 	BaseURL string
 }
 
-func NewClient(token, owner, repo string) *Client {
+func NewClient(token, owner, repo, baseURL string) *Client {
 	return &Client{
 		Token:   token,
 		Owner:   owner,
 		Repo:    repo,
-		BaseURL: "https://api.github.com",
+		BaseURL: baseURL,
 	}
 }
 

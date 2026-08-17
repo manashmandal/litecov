@@ -251,6 +251,52 @@ func TestResolveThreshold(t *testing.T) {
 	}
 }
 
+// TestResolveGitHubHost guards issue #49: litecov hardcoded api.github.com
+// and github.com, so it could not run on GitHub Enterprise Server, where
+// GITHUB_API_URL and GITHUB_SERVER_URL point at the enterprise host instead.
+func TestResolveGitHubHost(t *testing.T) {
+	tests := []struct {
+		name         string
+		envValue     string
+		defaultValue string
+		want         string
+	}{
+		{
+			name:         "empty env value falls back to the default",
+			envValue:     "",
+			defaultValue: "https://api.github.com",
+			want:         "https://api.github.com",
+		},
+		{
+			name:         "GITHUB_API_URL on github.com matches the default anyway",
+			envValue:     "https://api.github.com",
+			defaultValue: "https://api.github.com",
+			want:         "https://api.github.com",
+		},
+		{
+			name:         "GitHub Enterprise Server API host wins over the default",
+			envValue:     "https://ghe.example.com/api/v3",
+			defaultValue: "https://api.github.com",
+			want:         "https://ghe.example.com/api/v3",
+		},
+		{
+			name:         "GitHub Enterprise Server web host wins over the default",
+			envValue:     "https://ghe.example.com",
+			defaultValue: "https://github.com",
+			want:         "https://ghe.example.com",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resolveGitHubHost(tt.envValue, tt.defaultValue)
+			if got != tt.want {
+				t.Errorf("resolveGitHubHost(%q, %q) = %q, want %q", tt.envValue, tt.defaultValue, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestLoadBaseReport_NoReport(t *testing.T) {
 	// An empty path is the only case where (nil, nil) is correct: no base
 	// comparison was requested at all. Every other way loadBaseReport can

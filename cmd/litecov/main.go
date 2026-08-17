@@ -50,6 +50,11 @@ func main() {
 	repository := os.Getenv("GITHUB_REPOSITORY")
 	eventPath := os.Getenv("GITHUB_EVENT_PATH")
 	sha := os.Getenv("GITHUB_SHA")
+	// GITHUB_API_URL and GITHUB_SERVER_URL are "https://api.github.com" and
+	// "https://github.com" on github.com runners, but point at the
+	// enterprise host instead on GitHub Enterprise Server (issue #49).
+	apiBaseURL := resolveGitHubHost(os.Getenv("GITHUB_API_URL"), "https://api.github.com")
+	serverURL := resolveGitHubHost(os.Getenv("GITHUB_SERVER_URL"), "https://github.com")
 
 	if token == "" {
 		fmt.Fprintln(os.Stderr, "GITHUB_TOKEN is required")
@@ -117,7 +122,7 @@ func main() {
 	// having been configured at all (issue #39).
 	baseReport, baseErr := loadBaseReport(*baseCoverageFile, *pathPrefix, pathFixRules)
 
-	gh := github.NewClient(token, owner, repo)
+	gh := github.NewClient(token, owner, repo, apiBaseURL)
 
 	var changedFiles []string
 	var addedFiles map[string]bool
@@ -175,7 +180,7 @@ func main() {
 		outputAnnotations(report, annotationFiles)
 	}
 
-	repoURL := fmt.Sprintf("https://github.com/%s", repository)
+	repoURL := fmt.Sprintf("%s/%s", serverURL, repository)
 	opts := comment.Options{
 		Title:         *title,
 		ShowFiles:     *showFiles,
@@ -353,6 +358,22 @@ func resolveBaseBranch(flagValue, inputBaseBranch, githubBaseRef string) string 
 		return flagValue
 	}
 	return githubBaseRef
+}
+
+// resolveGitHubHost decides a GitHub host URL from the environment variable
+// GitHub Actions exports for it (envValue), falling back to defaultValue --
+// the github.com host -- when envValue is empty. GITHUB_API_URL and
+// GITHUB_SERVER_URL are both set on every Actions run, github.com ones
+// included, so an empty envValue only happens on a direct binary invocation
+// outside Actions. litecov used to hardcode the github.com host for both, so
+// on GitHub Enterprise Server -- where GITHUB_API_URL is
+// "https://HOSTNAME/api/v3" instead -- it sent the enterprise GITHUB_TOKEN to
+// api.github.com, where the token isn't valid (issue #49).
+func resolveGitHubHost(envValue, defaultValue string) string {
+	if envValue != "" {
+		return envValue
+	}
+	return defaultValue
 }
 
 func getPRNumber(eventPath string) (int, error) {
