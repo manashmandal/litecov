@@ -22,6 +22,10 @@ inputs:
     description: 'Minimum coverage threshold for passing status (0-100)'
     required: false
     default: '0'
+  patch-threshold:
+    description: 'Minimum patch coverage threshold for passing status (0-100), independent of threshold'
+    required: false
+    default: '0'
   title:
     description: 'Comment title'
     required: false
@@ -67,6 +71,7 @@ runs:
     INPUT_FORMAT: ${{ inputs.format }}
     INPUT_SHOW_FILES: ${{ inputs.show-files }}
     INPUT_THRESHOLD: ${{ inputs.threshold }}
+    INPUT_PATCH_THRESHOLD: ${{ inputs.patch-threshold }}
     INPUT_TITLE: ${{ inputs.title }}
     INPUT_ANNOTATIONS: ${{ inputs.annotations }}
     INPUT_BASE_COVERAGE_FILE: ${{ inputs.base-coverage-file }}

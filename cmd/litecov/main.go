@@ -20,6 +20,7 @@ func main() {
 	format := flag.String("format", "auto", "Coverage format: auto, lcov, cobertura, go")
 	showFiles := flag.String("show-files", "changed", "Files to show: all, changed, threshold:N, worst:N")
 	threshold := flag.Float64("threshold", 0, "Minimum coverage threshold for passing status")
+	patchThreshold := flag.Float64("patch-threshold", 0, "Minimum patch coverage threshold for passing status")
 	title := flag.String("title", "Coverage Report", "Comment title")
 	annotations := flag.Bool("annotations", false, "Output GitHub annotations for uncovered lines")
 	baseCoverageFile := flag.String("base-coverage-file", "", "Path to base branch coverage file for comparison")
@@ -224,16 +225,23 @@ func main() {
 	}
 
 	if sha != "" {
-		state := "success"
-		description := fmt.Sprintf("%.2f%% coverage", report.Coverage)
-		if *threshold > 0 && report.Coverage < *threshold {
-			state = "failure"
-			description = fmt.Sprintf("%.2f%% coverage (minimum: %.2f%%)", report.Coverage, *threshold)
-		}
+		state, description := commitStatusForCoverage(report.Coverage, *threshold)
 		if err := gh.SetCommitStatus(sha, state, description, "litecov"); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: Failed to set commit status: %v\n", err)
 		} else {
 			fmt.Printf("Commit status set: %s - %s\n", state, description)
+		}
+
+		// A second, independent status for patch coverage, Codecov's
+		// codecov/patch check (issue #10). Project coverage barely moves for
+		// a PR that adds a few hundred untested lines to a large, well
+		// covered repo, so litecov alone could never catch that; this status
+		// is scoped to just the lines the PR added.
+		patchState, patchDescription := commitStatusForPatchCoverage(opts.PatchCoverage, *patchThreshold)
+		if err := gh.SetCommitStatus(sha, patchState, patchDescription, "litecov/patch"); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: Failed to set patch commit status: %v\n", err)
+		} else {
+			fmt.Printf("Patch commit status set: %s - %s\n", patchState, patchDescription)
 		}
 	}
 
@@ -256,6 +264,48 @@ func main() {
 		fmt.Fprintf(os.Stderr, "\nCoverage %.2f%% is below threshold %.2f%%\n", report.Coverage, *threshold)
 		os.Exit(1)
 	}
+
+	// patch.Total == 0 is guarded the same way commitStatusForPatchCoverage
+	// guards it: nothing to measure must not be treated as a failing score.
+	if *patchThreshold > 0 && opts.PatchCoverage.Total > 0 && opts.PatchCoverage.Percentage() < *patchThreshold {
+		fmt.Fprintf(os.Stderr, "\nPatch coverage %.2f%% is below threshold %.2f%%\n", opts.PatchCoverage.Percentage(), *patchThreshold)
+		os.Exit(1)
+	}
+}
+
+// commitStatusForCoverage decides the state and description for the
+// project-wide "litecov" commit status. threshold <= 0 means no threshold
+// was configured, so the status is always "success".
+func commitStatusForCoverage(coverage, threshold float64) (state, description string) {
+	if threshold > 0 && coverage < threshold {
+		return "failure", fmt.Sprintf("%.2f%% coverage (minimum: %.2f%%)", coverage, threshold)
+	}
+	return "success", fmt.Sprintf("%.2f%% coverage", coverage)
+}
+
+// commitStatusForPatchCoverage decides the state and description for the
+// "litecov/patch" commit status, Codecov's codecov/patch check
+// (https://docs.codecov.com/docs/commit-status): the coverage of only the
+// lines a PR added, as opposed to commitStatusForCoverage's whole-project
+// number. Before this, a PR that added hundreds of untested lines to a
+// large, well covered repo could move project coverage by a fraction of a
+// percent and still pass (issue #10).
+//
+// patch.Total == 0 means there was nothing to measure -- no PR diff was
+// available, or the diff touched no coverable line -- so this reports
+// success rather than a 0% that was never actually computed, the same
+// sentinel formatPatchString applies to the PR comment (issue #6).
+// threshold <= 0 means patch-threshold wasn't configured, so a measured
+// patch is always "success" too.
+func commitStatusForPatchCoverage(patch coverage.PatchCoverage, threshold float64) (state, description string) {
+	if patch.Total == 0 {
+		return "success", "no coverable changes in this patch"
+	}
+	pct := patch.Percentage()
+	if threshold > 0 && pct < threshold {
+		return "failure", fmt.Sprintf("%.2f%% patch coverage (minimum: %.2f%%)", pct, threshold)
+	}
+	return "success", fmt.Sprintf("%.2f%% patch coverage", pct)
 }
 
 func getPRNumber(eventPath string) (int, error) {

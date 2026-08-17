@@ -20,6 +20,10 @@ if [ -n "$INPUT_THRESHOLD" ]; then
     ARGS="$ARGS -threshold=$INPUT_THRESHOLD"
 fi
 
+if [ -n "$INPUT_PATCH_THRESHOLD" ]; then
+    ARGS="$ARGS -patch-threshold=$INPUT_PATCH_THRESHOLD"
+fi
+
 if [ -n "$INPUT_TITLE" ]; then
     # Quote the title in case it contains spaces
     ARGS="$ARGS -title=\"$INPUT_TITLE\""

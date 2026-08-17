@@ -164,6 +164,7 @@ so it can diff them.
 | `format` | `auto` | Format: `auto`, `lcov`, `cobertura`, `go` |
 | `show-files` | `changed` | Files to show (see below) |
 | `threshold` | `0` | Minimum coverage % to pass |
+| `patch-threshold` | `0` | Minimum patch coverage % to pass, independent of `threshold` |
 | `title` | `Coverage Report` | Comment header |
 | `annotations` | `false` | Output GitHub annotations for uncovered lines |
 | `base-coverage-file` | None | Path to a base branch coverage file, enables comparison mode |
@@ -255,17 +256,28 @@ LiteCov looks for coverage files in this order:
 
 ## Threshold Enforcement
 
-Set a minimum coverage threshold:
+LiteCov posts two independent commit statuses, `litecov` for project-wide
+coverage and `litecov/patch` for coverage of just the lines the PR added
+(Codecov calls these `codecov/project` and `codecov/patch`). Each has its own
+threshold, so a PR that adds untested code fails even when it barely moves
+the project number:
 
 ```yaml
 - uses: manashmandal/litecov@v1
   with:
     threshold: 80
+    patch-threshold: 80
 ```
 
-If coverage drops below 80%, the action will:
-1. Set commit status to "failure"
+If coverage drops below either threshold, the action will:
+1. Set that status to "failure"
 2. Exit with code 1 (failing the workflow)
+
+`patch-threshold` is checked only against lines the PR actually touched. A
+PR with no coverable changes (docs, config, a diff outside any coverage
+tool's instrumentation) always passes `litecov/patch`, since there is
+nothing to measure. Leaving either threshold at `0` (the default) disables
+enforcement for that status.
 
 ## License
 

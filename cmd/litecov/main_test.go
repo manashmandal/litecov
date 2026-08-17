@@ -10,6 +10,140 @@ import (
 	"github.com/manashmandal/litecov/internal/parser"
 )
 
+func TestCommitStatusForCoverage(t *testing.T) {
+	tests := []struct {
+		name            string
+		coverage        float64
+		threshold       float64
+		wantState       string
+		wantDescription string
+	}{
+		{
+			name:            "no threshold configured always passes",
+			coverage:        10,
+			threshold:       0,
+			wantState:       "success",
+			wantDescription: "10.00% coverage",
+		},
+		{
+			name:            "above threshold passes",
+			coverage:        85,
+			threshold:       80,
+			wantState:       "success",
+			wantDescription: "85.00% coverage",
+		},
+		{
+			name:            "at threshold passes",
+			coverage:        80,
+			threshold:       80,
+			wantState:       "success",
+			wantDescription: "80.00% coverage",
+		},
+		{
+			name:            "below threshold fails",
+			coverage:        79.5,
+			threshold:       80,
+			wantState:       "failure",
+			wantDescription: "79.50% coverage (minimum: 80.00%)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state, description := commitStatusForCoverage(tt.coverage, tt.threshold)
+			if state != tt.wantState {
+				t.Errorf("state = %q, want %q", state, tt.wantState)
+			}
+			if description != tt.wantDescription {
+				t.Errorf("description = %q, want %q", description, tt.wantDescription)
+			}
+		})
+	}
+}
+
+func TestCommitStatusForPatchCoverage(t *testing.T) {
+	tests := []struct {
+		name            string
+		patch           coverage.PatchCoverage
+		threshold       float64
+		wantState       string
+		wantDescription string
+	}{
+		{
+			name:            "no threshold configured always passes",
+			patch:           coverage.PatchCoverage{Covered: 0, Total: 10},
+			threshold:       0,
+			wantState:       "success",
+			wantDescription: "0.00% patch coverage",
+		},
+		{
+			name:            "above threshold passes",
+			patch:           coverage.PatchCoverage{Covered: 9, Total: 10},
+			threshold:       80,
+			wantState:       "success",
+			wantDescription: "90.00% patch coverage",
+		},
+		{
+			name:            "below threshold fails",
+			patch:           coverage.PatchCoverage{Covered: 1, Total: 10},
+			threshold:       80,
+			wantState:       "failure",
+			wantDescription: "10.00% patch coverage (minimum: 80.00%)",
+		},
+		{
+			// issue #6: Total == 0 means nothing was measured -- no PR diff,
+			// or the diff touched no coverable line -- not a 0% patch. A
+			// configured threshold must not fail a PR that had nothing to
+			// test.
+			name:            "no coverable patch lines always passes regardless of threshold",
+			patch:           coverage.PatchCoverage{Covered: 0, Total: 0},
+			threshold:       80,
+			wantState:       "success",
+			wantDescription: "no coverable changes in this patch",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state, description := commitStatusForPatchCoverage(tt.patch, tt.threshold)
+			if state != tt.wantState {
+				t.Errorf("state = %q, want %q", state, tt.wantState)
+			}
+			if description != tt.wantDescription {
+				t.Errorf("description = %q, want %q", description, tt.wantDescription)
+			}
+		})
+	}
+}
+
+// TestCommitStatusForPatchCoverage_CatchesWhatProjectMisses reproduces issue
+// #10's repro case: a repo sitting at 85% coverage over 30,000 lines gets a
+// PR that adds 200 fully untested lines. Project coverage lands around
+// 84.44%, still above an 80% project threshold, so "litecov" reports
+// success on its own -- exactly the false green the issue describes. Patch
+// coverage for that same PR is 0%, which "litecov/patch" must catch since
+// project coverage never will.
+func TestCommitStatusForPatchCoverage_CatchesWhatProjectMisses(t *testing.T) {
+	const projectThreshold = 80.0
+
+	// 30,000 lines at 85% before the PR (25,500 covered), plus 200 new,
+	// wholly uncovered lines.
+	projectCoverage := 25500.0 / 30200.0 * 100
+	if state, description := commitStatusForCoverage(projectCoverage, projectThreshold); state != "success" {
+		t.Fatalf("test setup invalid: project status = %q (%s), want success -- that false green is the bug issue #10 reports", state, description)
+	}
+
+	patch := coverage.PatchCoverage{Covered: 0, Total: 200}
+	state, description := commitStatusForPatchCoverage(patch, projectThreshold)
+	if state != "failure" {
+		t.Errorf("patch state = %q, want failure: a passing project status must not mask 0%% patch coverage", state)
+	}
+	wantDescription := "0.00% patch coverage (minimum: 80.00%)"
+	if description != wantDescription {
+		t.Errorf("patch description = %q, want %q", description, wantDescription)
+	}
+}
+
 func TestLoadBaseReport_NoReport(t *testing.T) {
 	// An empty path is the only case where (nil, nil) is correct: no base
 	// comparison was requested at all. Every other way loadBaseReport can
