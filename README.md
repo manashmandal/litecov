@@ -14,6 +14,19 @@ Lightweight code coverage reporter for GitHub Actions. Zero infrastructure, one-
 
 That's it. LiteCov will auto-detect your coverage file and post a PR comment.
 
+### Permissions
+
+LiteCov needs write access to comment on the PR and set commit statuses. Repositories created under GitHub's [restricted default](https://docs.github.com/en/actions/writing-workflows/choosing-what-your-workflow-does/controlling-permissions-for-github_token) start `GITHUB_TOKEN` out read-only, which fails those writes with a 403. Add this to the job:
+
+```yaml
+permissions:
+  contents: read
+  pull-requests: write
+  statuses: write
+```
+
+Setting any `permissions:` key resets every unlisted scope to `none`, so `contents: read` has to stay in the list for `actions/checkout` to keep working.
+
 ## Features
 
 - **Zero infrastructure** - No server, database, or external services
@@ -34,6 +47,10 @@ on: [pull_request]
 jobs:
   test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      statuses: write
     steps:
       - uses: actions/checkout@v4
 
@@ -112,6 +129,8 @@ on: [pull_request]
 jobs:
   base-coverage:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -131,6 +150,10 @@ jobs:
   pr-coverage:
     needs: base-coverage
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      statuses: write
     steps:
       - uses: actions/checkout@v4
 
@@ -219,7 +242,9 @@ To get comments on fork PRs, run LiteCov from a workflow that actually has write
     test:
       runs-on: ubuntu-latest
       permissions:
+        contents: read
         pull-requests: write
+        statuses: write
       steps:
         - uses: actions/checkout@v4
           with:
@@ -235,7 +260,7 @@ To get comments on fork PRs, run LiteCov from a workflow that actually has write
 
 - Two workflows connected by `workflow_run` - a `pull_request` workflow that builds and uploads the coverage file as an artifact, no token required; a separate `workflow_run` workflow that downloads the artifact and runs LiteCov with a `pull-requests: write` token. More setup, but the fork's code never runs with write access.
 
-Either way, LiteCov itself needs no extra configuration: give it a token with `pull-requests: write` on whichever workflow actually invokes it.
+Either way, LiteCov itself needs no extra configuration: give it a token with `contents: read`, `pull-requests: write`, and `statuses: write` on whichever workflow actually invokes it.
 
 ## PR Comment
 

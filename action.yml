@@ -59,7 +59,7 @@ inputs:
     description: 'Newline separated "before::after" path rewrite rules, same shorthand as Codecov''s fixes:'
     required: false
   token:
-    description: 'GitHub token'
+    description: 'GitHub token used to post/update the PR comment and set commit statuses. Needs contents: read, pull-requests: write, and statuses: write -- see Permissions in the README'
     required: false
     default: ${{ github.token }}
 

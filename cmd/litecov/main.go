@@ -257,7 +257,7 @@ func main() {
 	if sha != "" {
 		state, description := commitStatusForCoverage(report.Coverage, *threshold)
 		if err := gh.SetCommitStatus(sha, state, description, commitStatusContext(*flagName), targetURL); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: Failed to set commit status: %v\n", err)
+			fmt.Fprintln(os.Stderr, commitStatusFailureMessage("set commit status", err))
 		} else {
 			fmt.Printf("Commit status set: %s - %s\n", state, description)
 		}
@@ -269,7 +269,7 @@ func main() {
 		// is scoped to just the lines the PR added.
 		patchState, patchDescription := commitStatusForPatchCoverage(opts.PatchCoverage, *patchThreshold)
 		if err := gh.SetCommitStatus(sha, patchState, patchDescription, patchCommitStatusContext(*flagName), targetURL); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: Failed to set patch commit status: %v\n", err)
+			fmt.Fprintln(os.Stderr, commitStatusFailureMessage("set patch commit status", err))
 		} else {
 			fmt.Printf("Patch commit status set: %s - %s\n", patchState, patchDescription)
 		}
@@ -324,12 +324,24 @@ func postCoverageComment(gh *github.Client, prNumber int, marker, body string) e
 	return gh.CreateComment(prNumber, body)
 }
 
+// requiredPermissionsBlock is the job permissions: litecov needs for every
+// write it makes -- posting/updating the PR comment and setting both commit
+// statuses. A restricted-default token 403s the same way a fork PR's
+// forced-read-only token does, and the response body alone doesn't tell the
+// user this is the fix, so write-failure messages print it directly
+// (issue #43) instead of sending the user to find it in the README.
+const requiredPermissionsBlock = "  permissions:\n    contents: read\n    pull-requests: write\n    statuses: write"
+
 // commentPostOutcome decides what postCoverageComment's failure means for
 // the run: the message to print, and whether it should be fatal. A
 // permission error is what a fork PR's read-only GITHUB_TOKEN produces on
 // CreateComment/UpdateComment, since GitHub only grants such a token read
 // access:
 // https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request
+// It's also what a job whose permissions: block omits pull-requests: write
+// produces on a repo with restricted default permissions -- the same 403
+// either way, so the message covers both and prints the block that fixes
+// the second case (issue #43).
 // SetCommitStatus already treats that same class of failure as non-fatal
 // below; this makes comment posting consistent with it instead of failing
 // every fork PR's run over a comment the token was never going to be
@@ -337,9 +349,22 @@ func postCoverageComment(gh *github.Client, prNumber int, marker, body string) e
 // that outlasted the client's retries, a malformed body -- is still fatal.
 func commentPostOutcome(err error) (message string, fatal bool) {
 	if errors.Is(err, github.ErrPermissionDenied) {
-		return "Cannot comment: GITHUB_TOKEN is read-only (fork PR or restricted workflow permissions). Skipping comment.", false
+		return fmt.Sprintf("Cannot comment: GITHUB_TOKEN can't write pull request comments (fork PR, or a job permissions: block missing pull-requests: write). Skipping comment. If this isn't a fork PR, add:\n%s", requiredPermissionsBlock), false
 	}
 	return fmt.Sprintf("Failed to post comment: %v", err), true
+}
+
+// commitStatusFailureMessage formats the warning printed when a commit
+// status write fails. action names which status failed ("set commit
+// status" or "set patch commit status") for the two call sites in main.
+// A permission error gets the same required-block hint as
+// commentPostOutcome and for the same reason (issue #43); anything else
+// falls back to relaying the wrapped error as before.
+func commitStatusFailureMessage(action string, err error) string {
+	if errors.Is(err, github.ErrPermissionDenied) {
+		return fmt.Sprintf("Warning: Failed to %s: GITHUB_TOKEN can't write commit statuses (fork PR, or a job permissions: block missing statuses: write). If this isn't a fork PR, add:\n%s", action, requiredPermissionsBlock)
+	}
+	return fmt.Sprintf("Warning: Failed to %s: %v", action, err)
 }
 
 // commitStatusForCoverage decides the state and description for the

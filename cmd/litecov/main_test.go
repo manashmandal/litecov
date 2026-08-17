@@ -874,7 +874,9 @@ func TestPostCoverageComment(t *testing.T) {
 // to be a hard failure that took down the whole run for every fork
 // contributor. A permission error must now produce a clear, non-fatal
 // message instead of the raw wrapped API error, while every other failure
-// stays fatal exactly as before.
+// stays fatal exactly as before. It also covers issue #43: that message
+// must print the job permissions: block that fixes the case where the
+// 403 came from a restricted-default token rather than a fork PR.
 func TestCommentPostOutcome(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -885,10 +887,12 @@ func TestCommentPostOutcome(t *testing.T) {
 		{
 			// Wrapped the way postCoverageComment wraps a FindExistingComment
 			// failure, to confirm errors.Is still matches through that layer.
-			name:        "permission denied is reported and non-fatal",
-			err:         fmt.Errorf("looking up existing comment: %w", github.ErrPermissionDenied),
-			wantMessage: "Cannot comment: GITHUB_TOKEN is read-only (fork PR or restricted workflow permissions). Skipping comment.",
-			wantFatal:   false,
+			name: "permission denied is reported, non-fatal, and names the fix",
+			err:  fmt.Errorf("looking up existing comment: %w", github.ErrPermissionDenied),
+			wantMessage: "Cannot comment: GITHUB_TOKEN can't write pull request comments (fork PR, or a job permissions: block missing pull-requests: write). " +
+				"Skipping comment. If this isn't a fork PR, add:\n" +
+				"  permissions:\n    contents: read\n    pull-requests: write\n    statuses: write",
+			wantFatal: false,
 		},
 		{
 			name:        "any other error stays fatal",
@@ -906,6 +910,51 @@ func TestCommentPostOutcome(t *testing.T) {
 			}
 			if fatal != tt.wantFatal {
 				t.Errorf("fatal = %v, want %v", fatal, tt.wantFatal)
+			}
+		})
+	}
+}
+
+// TestCommitStatusFailureMessage covers issue #43: SetCommitStatus failing
+// with a 403 used to surface only the raw wrapped API error ("GitHub API
+// permission denied: 403 Forbidden - {...}"), leaving the user to guess
+// what to change. A permission error must now name the cause and print the
+// job permissions: block that fixes it when the token isn't a fork PR's;
+// any other failure keeps relaying the plain error as before.
+func TestCommitStatusFailureMessage(t *testing.T) {
+	tests := []struct {
+		name        string
+		action      string
+		err         error
+		wantMessage string
+	}{
+		{
+			name:   "permission denied names the fix",
+			action: "set commit status",
+			err:    fmt.Errorf("posting status: %w: 403 Forbidden - {\"message\":\"Resource not accessible by integration\"}", github.ErrPermissionDenied),
+			wantMessage: "Warning: Failed to set commit status: GITHUB_TOKEN can't write commit statuses (fork PR, or a job permissions: block missing statuses: write). " +
+				"If this isn't a fork PR, add:\n" +
+				"  permissions:\n    contents: read\n    pull-requests: write\n    statuses: write",
+		},
+		{
+			name:        "action names the patch status call site",
+			action:      "set patch commit status",
+			err:         github.ErrPermissionDenied,
+			wantMessage: "Warning: Failed to set patch commit status: GITHUB_TOKEN can't write commit statuses (fork PR, or a job permissions: block missing statuses: write). If this isn't a fork PR, add:\n  permissions:\n    contents: read\n    pull-requests: write\n    statuses: write",
+		},
+		{
+			name:        "any other error is relayed as before",
+			action:      "set commit status",
+			err:         errors.New("connection reset by peer"),
+			wantMessage: "Warning: Failed to set commit status: connection reset by peer",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			message := commitStatusFailureMessage(tt.action, tt.err)
+			if message != tt.wantMessage {
+				t.Errorf("message = %q, want %q", message, tt.wantMessage)
 			}
 		})
 	}
