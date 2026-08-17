@@ -10,6 +10,22 @@ permissions:
   statuses: write
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Check formatting
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+
+      - name: Vet
+        run: go vet ./...
+
   test:
     runs-on: ubuntu-latest
     steps:
@@ -18,10 +34,10 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.21'
+          go-version-file: go.mod
 
       - name: Run tests with coverage
-        run: go test ./internal/... -coverprofile=coverage.out -covermode=atomic
+        run: go test -race ./internal/... -coverprofile=coverage.out -covermode=atomic
 
       - name: Convert coverage to Cobertura
         run: |
@@ -47,7 +63,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.21'
+          go-version-file: go.mod
 
       - name: Build
         run: go build -ldflags="-s -w" -o litecov ./cmd/litecov
