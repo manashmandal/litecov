@@ -278,6 +278,66 @@ diff --git a/file.go b/file.go
 				},
 			},
 		},
+		{
+			name: "quoted path with octal-escaped non-ASCII bytes",
+			input: `diff --git "a/src/caf\303\251.go" "b/src/caf\303\251.go"
+--- "a/src/caf\303\251.go"
++++ "b/src/caf\303\251.go"
+@@ -3,1 +3,2 @@ func foo() {
++added line`,
+			expected: []FileDiff{
+				{
+					Path: "src/café.go",
+					AddedLines: []LineRange{
+						{Start: 3, End: 4},
+					},
+				},
+			},
+		},
+		{
+			name: "path containing a literal \" b/\" sequence",
+			input: `diff --git a/src/a b/c.go b/src/a b/c.go
+--- a/src/a b/c.go
++++ b/src/a b/c.go
+@@ -1,2 +1,3 @@ package main
++added line`,
+			expected: []FileDiff{
+				{
+					Path: "src/a b/c.go",
+					AddedLines: []LineRange{
+						{Start: 1, End: 3},
+					},
+				},
+			},
+		},
+		{
+			name:  "CRLF line endings do not leave a trailing carriage return on the path",
+			input: "diff --git a/file.go b/file.go\r\n--- a/file.go\r\n+++ b/file.go\r\n@@ -1,2 +1,3 @@ package main\r\n+added line\r\n",
+			expected: []FileDiff{
+				{
+					Path: "file.go",
+					AddedLines: []LineRange{
+						{Start: 1, End: 3},
+					},
+				},
+			},
+		},
+		{
+			name: "renamed file uses the new path, not the old one",
+			input: `diff --git a/old.go b/new.go
+--- a/old.go
++++ b/new.go
+@@ -1,1 +1,2 @@ package main
++added line`,
+			expected: []FileDiff{
+				{
+					Path: "new.go",
+					AddedLines: []LineRange{
+						{Start: 1, End: 2},
+					},
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {
