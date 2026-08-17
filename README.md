@@ -97,6 +97,65 @@ JaCoCo doesn't export Cobertura XML. Convert its native report with [cover2cover
     coverage-file: target/site/jacoco/cobertura.xml
 ```
 
+### Comparing Against a Base Branch
+
+LiteCov has no server or cache, so it can't look up the base branch's coverage
+on its own. Give it a `base-coverage-file` and it will render the Codecov-style
+delta column; without one it falls back to the plain report. The base file has
+to come from somewhere, so compute it in the same workflow run and pass it
+across jobs with an artifact:
+
+```yaml
+name: Coverage
+on: [pull_request]
+
+jobs:
+  base-coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - run: go test -coverprofile=coverage.out ./...
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: base-coverage
+          path: coverage.out
+
+  pr-coverage:
+    needs: base-coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - run: go test -coverprofile=coverage.out ./...
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: base-coverage
+          path: base
+
+      - uses: manashmandal/litecov@v1
+        with:
+          coverage-file: coverage.out
+          base-coverage-file: base/coverage.out
+          base-branch: ${{ github.event.pull_request.base.ref }}
+```
+
+`base-coverage` checks out the PR's base commit and tests it. `pr-coverage`
+tests the PR head, downloads that artifact, and hands both files to litecov
+so it can diff them.
+
 ## Inputs
 
 | Input | Default | Description |
@@ -107,6 +166,8 @@ JaCoCo doesn't export Cobertura XML. Convert its native report with [cover2cover
 | `threshold` | `0` | Minimum coverage % to pass |
 | `title` | `Coverage Report` | Comment header |
 | `annotations` | `false` | Output GitHub annotations for uncovered lines |
+| `base-coverage-file` | None | Path to a base branch coverage file, enables comparison mode |
+| `base-branch` | `main` | Base branch name shown in the diff header |
 | `token` | `GITHUB_TOKEN` | GitHub token |
 
 ### Show Files Options
