@@ -142,7 +142,7 @@ func TestReport_HitsAndMisses_Zero(t *testing.T) {
 }
 
 func TestNewComparison_NilHead(t *testing.T) {
-	comp := NewComparison(nil, nil, nil, nil)
+	comp := NewComparison(nil, nil, nil, nil, nil)
 
 	if comp.Head != nil {
 		t.Errorf("Head = %v, want nil", comp.Head)
@@ -163,7 +163,7 @@ func TestNewComparison_NilBase(t *testing.T) {
 		Coverage: 80.0,
 	}
 
-	comp := NewComparison(head, nil, nil, nil)
+	comp := NewComparison(head, nil, nil, nil, nil)
 
 	if comp.Head != head {
 		t.Error("Head should match provided report")
@@ -203,7 +203,7 @@ func TestNewComparison_WithBase(t *testing.T) {
 		Coverage: 80.0,
 	}
 
-	comp := NewComparison(head, base, nil, nil)
+	comp := NewComparison(head, base, nil, nil, nil)
 
 	if comp.CoverageDelta != -10.0 {
 		t.Errorf("CoverageDelta = %v, want -10.0", comp.CoverageDelta)
@@ -262,7 +262,7 @@ func TestNewComparison_NoStatements(t *testing.T) {
 		Coverage: 100.0,
 	}
 
-	comp := NewComparison(head, nil, nil, nil)
+	comp := NewComparison(head, nil, nil, nil, nil)
 
 	if len(comp.FileChanges) != 2 {
 		t.Fatalf("FileChanges length = %v, want 2", len(comp.FileChanges))
@@ -304,7 +304,7 @@ func TestNewComparison_WithChangedFiles(t *testing.T) {
 	}
 
 	changedFiles := []string{"a.go", "b.go"}
-	comp := NewComparison(head, base, changedFiles, nil)
+	comp := NewComparison(head, base, changedFiles, nil, nil)
 
 	if len(comp.FileChanges) != 2 {
 		t.Errorf("FileChanges length = %v, want 2", len(comp.FileChanges))
@@ -326,7 +326,7 @@ func TestNewComparison_EmptyChangedFiles(t *testing.T) {
 		Coverage: 70.0,
 	}
 
-	comp := NewComparison(head, nil, []string{}, nil)
+	comp := NewComparison(head, nil, []string{}, nil, nil)
 
 	if len(comp.FileChanges) != 2 {
 		t.Errorf("FileChanges length = %v, want 2 (empty changedFiles means all files)", len(comp.FileChanges))
@@ -370,7 +370,7 @@ func TestNewComparison_MissingFiles(t *testing.T) {
 
 	// Changed files include files not in the coverage report
 	changedFiles := []string{"internal/foo/a.go", "cmd/app/main.go", "internal/bar/b.go"}
-	comp := NewComparison(head, nil, changedFiles, nil)
+	comp := NewComparison(head, nil, changedFiles, nil, nil)
 
 	// Should have 3 file changes: 1 covered + 2 missing
 	if len(comp.FileChanges) != 3 {
@@ -400,7 +400,7 @@ func TestNewComparison_MissingFiles_SkipsTestFiles(t *testing.T) {
 
 	// Changed files include test files which should be skipped
 	changedFiles := []string{"internal/foo/a.go", "internal/foo/a_test.go", "cmd/app/main_test.go"}
-	comp := NewComparison(head, nil, changedFiles, nil)
+	comp := NewComparison(head, nil, changedFiles, nil, nil)
 
 	// Should only have 1 file change (test files are skipped)
 	if len(comp.FileChanges) != 1 {
@@ -426,7 +426,7 @@ func TestNewComparison_IsNewFromAddedFiles(t *testing.T) {
 
 	addedFiles := map[string]bool{"added.go": true}
 
-	comp := NewComparison(head, nil, nil, addedFiles)
+	comp := NewComparison(head, nil, nil, addedFiles, nil)
 
 	var addedChange, orphanedChange FileChange
 	for _, fc := range comp.FileChanges {
@@ -467,12 +467,130 @@ func TestNewComparison_EmptyBaseReport(t *testing.T) {
 		Coverage: 0,
 	}
 
-	comp := NewComparison(head, base, nil, nil)
+	comp := NewComparison(head, base, nil, nil, nil)
 
 	if !comp.NoBaseFiles {
 		t.Error("NoBaseFiles should be true when the base report has zero files")
 	}
 	if comp.CoverageDelta != 0 {
 		t.Errorf("CoverageDelta = %v, want 0 (not head.Coverage - 0)", comp.CoverageDelta)
+	}
+}
+
+func TestNewComparison_BaseOnlyFileNotDropped(t *testing.T) {
+	// Reproduces issue #31's "no filter" repro: base has a.go and b.go both
+	// at 100%, the PR deletes b.go, so head only has a.go. With no
+	// changed-file filter, b.go used to vanish from FileChanges entirely
+	// instead of explaining where its coverage went.
+	head := &Report{
+		Files: []FileCoverage{
+			{Path: "a.go", LinesCovered: 10, LinesTotal: 10},
+		},
+		Coverage: 100.0,
+	}
+	base := &Report{
+		Files: []FileCoverage{
+			{Path: "a.go", LinesCovered: 10, LinesTotal: 10},
+			{Path: "b.go", LinesCovered: 10, LinesTotal: 10},
+		},
+		Coverage: 100.0,
+	}
+
+	comp := NewComparison(head, base, nil, nil, nil)
+
+	if len(comp.FileChanges) != 2 {
+		t.Fatalf("FileChanges length = %v, want 2 (b.go must not be dropped)", len(comp.FileChanges))
+	}
+
+	var bChange FileChange
+	found := false
+	for _, fc := range comp.FileChanges {
+		if fc.Path == "b.go" {
+			bChange = fc
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("b.go should appear in FileChanges even though it's absent from head")
+	}
+	// No PR diff data was supplied to say why b.go is gone, so it gets the
+	// general "unknown" signal rather than an asserted IsDeleted.
+	if !bChange.NoCoverage {
+		t.Error("b.go should be NoCoverage: it's absent from head with no PR diff data confirming why")
+	}
+	if bChange.IsDeleted {
+		t.Error("b.go should not be IsDeleted without PR diff data confirming removal")
+	}
+	if bChange.BaseCoverage != 100.0 {
+		t.Errorf("b.go BaseCoverage = %v, want 100.0", bChange.BaseCoverage)
+	}
+}
+
+func TestNewComparison_BaseOnlyFileSkippedWhenFilteringChanged(t *testing.T) {
+	// A base-only file that isn't part of the PR's changed-file list is out
+	// of scope for a "changed files" view, the same reasoning issue #20
+	// applied to not falling back to every file in the report.
+	head := &Report{
+		Files: []FileCoverage{
+			{Path: "a.go", LinesCovered: 10, LinesTotal: 10},
+		},
+		Coverage: 100.0,
+	}
+	base := &Report{
+		Files: []FileCoverage{
+			{Path: "a.go", LinesCovered: 10, LinesTotal: 10},
+			{Path: "b.go", LinesCovered: 10, LinesTotal: 10},
+		},
+		Coverage: 100.0,
+	}
+
+	comp := NewComparison(head, base, []string{"a.go"}, nil, nil)
+
+	for _, fc := range comp.FileChanges {
+		if fc.Path == "b.go" {
+			t.Error("b.go should not appear when filtering by changed files and it's not in the diff")
+		}
+	}
+}
+
+func TestNewComparison_IsDeletedFromRemovedFiles(t *testing.T) {
+	// Core of issue #31: a file GitHub's diff marks "removed" must not
+	// render as an untested 0% (NoCoverage). It gets its own IsDeleted
+	// signal instead, with its last known coverage carried from base.
+	head := &Report{
+		Files: []FileCoverage{
+			{Path: "a.go", LinesCovered: 10, LinesTotal: 10},
+		},
+		Coverage: 100.0,
+	}
+	base := &Report{
+		Files: []FileCoverage{
+			{Path: "a.go", LinesCovered: 10, LinesTotal: 10},
+			{Path: "b.go", LinesCovered: 10, LinesTotal: 10},
+		},
+		Coverage: 100.0,
+	}
+
+	changedFiles := []string{"b.go"}
+	removedFiles := map[string]bool{"b.go": true}
+
+	comp := NewComparison(head, base, changedFiles, nil, removedFiles)
+
+	if len(comp.FileChanges) != 1 {
+		t.Fatalf("FileChanges length = %v, want 1", len(comp.FileChanges))
+	}
+
+	bChange := comp.FileChanges[0]
+	if bChange.Path != "b.go" {
+		t.Fatalf("FileChanges[0].Path = %v, want b.go", bChange.Path)
+	}
+	if !bChange.IsDeleted {
+		t.Error("b.go should be IsDeleted: the PR diff reports its status as removed")
+	}
+	if bChange.NoCoverage {
+		t.Error("b.go should not also be NoCoverage: IsDeleted already explains the missing head data")
+	}
+	if bChange.BaseCoverage != 100.0 {
+		t.Errorf("b.go BaseCoverage = %v, want 100.0", bChange.BaseCoverage)
 	}
 }

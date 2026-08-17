@@ -883,7 +883,7 @@ func TestFormatWithComparison(t *testing.T) {
 		Coverage:     75.0,
 	}
 
-	comp := coverage.NewComparison(head, base, nil, nil)
+	comp := coverage.NewComparison(head, base, nil, nil, nil)
 	opts := Options{
 		Title:      "PR Coverage",
 		PRNumber:   123,
@@ -936,7 +936,7 @@ func TestFormatWithComparison_NoBase(t *testing.T) {
 		Coverage:     80.0,
 	}
 
-	comp := coverage.NewComparison(head, nil, nil, nil)
+	comp := coverage.NewComparison(head, nil, nil, nil, nil)
 	opts := Options{
 		Title: "Coverage",
 	}
@@ -969,7 +969,7 @@ func TestFormatWithComparison_EmptyBase(t *testing.T) {
 		Coverage: 0,
 	}
 
-	comp := coverage.NewComparison(head, base, nil, nil)
+	comp := coverage.NewComparison(head, base, nil, nil, nil)
 	opts := Options{Title: "Coverage"}
 
 	result := FormatWithComparison(comp, opts)
@@ -1275,6 +1275,55 @@ func TestFormatImpactedFilesWithDelta_NoCoverage(t *testing.T) {
 	}
 }
 
+func TestFormatImpactedFilesWithDelta_IsDeleted(t *testing.T) {
+	// A file the PR diff reports as removed must not render like
+	// TestFormatImpactedFilesWithDelta_NoCoverage's "unknown" 0%: the tool
+	// knows exactly why there's no head measurement, so it shows the last
+	// known (base) coverage and a distinct removed marker instead. See
+	// issue #31.
+	fileChanges := []coverage.FileChange{
+		{Path: "internal/bar/b.go", BaseCoverage: 100, Delta: -100, IsDeleted: true},
+		{Path: "src/a.py", HeadCoverage: 100, BaseCoverage: 100, Delta: 0},
+	}
+
+	result := formatImpactedFilesWithDelta(fileChanges, Options{})
+
+	if !strings.Contains(result, "`100.00%`") {
+		t.Error("a deleted file should show its last known (base) coverage")
+	}
+	if strings.Contains(result, "`no coverage data`") {
+		t.Error("a deleted file should not render as NoCoverage's \"no coverage data\"")
+	}
+	if strings.Contains(result, "❓") {
+		t.Error("a deleted file should get its own removed marker, not NoCoverage's ❓")
+	}
+	if !strings.Contains(result, "`removed`") {
+		t.Error("missing the removed marker for a deleted file")
+	}
+	if !strings.Contains(result, "🗑️") {
+		t.Error("missing the removed status emoji for a deleted file")
+	}
+}
+
+func TestFormatImpactedFilesWithDelta_IsDeleted_NoBaseData(t *testing.T) {
+	// A file confirmed removed by the diff but with no matching base
+	// coverage entry either: there's no percentage to show, so the
+	// coverage column falls back to the same "removed" text as the delta
+	// column instead of a misleading 0.00%.
+	fileChanges := []coverage.FileChange{
+		{Path: "internal/bar/b.go", IsDeleted: true, NoBaseData: true},
+	}
+
+	result := formatImpactedFilesWithDelta(fileChanges, Options{})
+
+	if strings.Contains(result, "`0.00%`") {
+		t.Error("a deleted file with no base data should not render as a flat 0.00%")
+	}
+	if !strings.Contains(result, "`removed`") {
+		t.Error("missing the removed marker for a deleted file with no base data")
+	}
+}
+
 func TestFormatImpactedFilesWithDelta_Empty(t *testing.T) {
 	result := formatImpactedFilesWithDelta(nil, Options{})
 	if result != "" {
@@ -1314,6 +1363,14 @@ func TestFormatFileDelta(t *testing.T) {
 			name:     "no coverage data",
 			fc:       coverage.FileChange{IsNew: true, NoCoverage: true, Delta: 0},
 			expected: "`unknown`",
+		},
+		{
+			// issue #31: a file the PR diff confirms was removed gets its
+			// own "removed" label rather than NoCoverage's "unknown",
+			// since the tool knows exactly why head data is missing.
+			name:     "removed file",
+			fc:       coverage.FileChange{IsDeleted: true, BaseCoverage: 100, Delta: -100},
+			expected: "`removed`",
 		},
 		{
 			// issue #32: no base entry, and the PR diff didn't call this

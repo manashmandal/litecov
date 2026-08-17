@@ -336,6 +336,19 @@ func formatImpactedFilesWithDelta(fileChanges []coverage.FileChange, opts Option
 			coverageStr = "`no coverage data`"
 			emoji = "❓"
 		}
+		// A file the PR diff reports as removed has no head measurement for
+		// a known reason: it doesn't exist anymore. Show what it measured
+		// in base instead of NoCoverage's "unknown", which would say the
+		// same thing about a deleted file as about one that's still there
+		// but wasn't measured (issue #31).
+		if fc.IsDeleted {
+			if fc.NoBaseData {
+				coverageStr = "`removed`"
+			} else {
+				coverageStr = fmt.Sprintf("`%.2f%%`", fc.BaseCoverage)
+			}
+			emoji = "🗑️"
+		}
 		sb.WriteString(fmt.Sprintf("| %s | %s | %s | %s |\n", fileName, coverageStr, deltaStr, emoji))
 	}
 
@@ -345,6 +358,12 @@ func formatImpactedFilesWithDelta(fileChanges []coverage.FileChange, opts Option
 }
 
 func formatFileDelta(fc coverage.FileChange) string {
+	if fc.IsDeleted {
+		// Confirmed removed by the PR diff, so "unknown" would undersell
+		// what's known here: the file is gone, not just unmeasured
+		// (issue #31).
+		return "`removed`"
+	}
 	if fc.NoCoverage {
 		return "`unknown`"
 	}

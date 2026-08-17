@@ -72,7 +72,14 @@ type FileChange struct {
 	// base coverage report: a file can be missing from the base report
 	// because the base run was partial, crashed, or excluded the file, none
 	// of which mean the PR added it (issue #32).
-	IsNew        bool
+	IsNew bool
+	// IsDeleted is true when GitHub's PR diff reports this file's status as
+	// "removed". HeadCoverage stays at its zero-value sentinel because the
+	// file no longer exists at head, not because a still-present file's
+	// coverage data went missing: that's what NoCoverage is for, and
+	// conflating the two rendered a deleted file as an untested 0% (issue
+	// #31).
+	IsDeleted    bool
 	NoCoverage   bool // True if the file is absent from the coverage report entirely: coverage is unknown, not 0%
 	NoStatements bool // True if the file has no coverable lines (LinesTotal == 0): coverage is undefined, not 0%
 	// NoBaseData is true when there is no entry for this file in the base
@@ -88,8 +95,9 @@ type FileChange struct {
 // changedFiles is an optional list of file paths that changed in the PR.
 // addedFiles is an optional set of paths that GitHub's PR diff reports as
 // newly added, used for IsNew (see its doc comment for why that isn't
-// inferred from base-report absence).
-func NewComparison(head, base *Report, changedFiles []string, addedFiles map[string]bool) *Comparison {
+// inferred from base-report absence). removedFiles is the same for paths
+// the diff reports as removed, used for IsDeleted.
+func NewComparison(head, base *Report, changedFiles []string, addedFiles, removedFiles map[string]bool) *Comparison {
 	if head == nil {
 		return &Comparison{}
 	}
@@ -194,7 +202,17 @@ func NewComparison(head, base *Report, changedFiles []string, addedFiles map[str
 				BaseCoverage: 0,
 				Delta:        0,
 				IsNew:        addedFiles[changedFile],
-				NoCoverage:   true,
+			}
+			if removedFiles[changedFile] {
+				// GitHub's diff confirms the PR removed this file: there is
+				// no head coverage because the file is gone, not because a
+				// still-present file's coverage data is missing. NoCoverage's
+				// "unknown" would say the same thing about a deleted file as
+				// about one that's still there but wasn't measured (issue
+				// #31).
+				fc.IsDeleted = true
+			} else {
+				fc.NoCoverage = true
 			}
 			// Check if file existed in base
 			if baseFile := findFileInReport(base, changedFile); baseFile != nil {
@@ -204,6 +222,28 @@ func NewComparison(head, base *Report, changedFiles []string, addedFiles map[str
 				fc.NoBaseData = true
 			}
 			comp.FileChanges = append(comp.FileChanges, fc)
+		}
+	}
+
+	// A file present in base but absent from head produces no FileChange
+	// from either loop above unless it's also in changedFiles, so its
+	// coverage silently vanishes from the comment instead of explaining
+	// where it went (issue #31). Skipped when filtering by changed files: a
+	// base-only file the PR's diff never touched is out of scope for a
+	// "changed files" view, the same reasoning issue #20 applied to not
+	// falling back to every file in the report.
+	if base != nil && !filterByChanged {
+		for i := range base.Files {
+			baseFile := &base.Files[i]
+			if _, exists := headFileMap[baseFile.Path]; exists {
+				continue
+			}
+			comp.FileChanges = append(comp.FileChanges, FileChange{
+				Path:         baseFile.Path,
+				BaseCoverage: baseFile.Percentage(),
+				Delta:        -baseFile.Percentage(),
+				NoCoverage:   true,
+			})
 		}
 	}
 

@@ -43,8 +43,9 @@ func (c *Client) doRequest(method, path string, body io.Reader) (*http.Response,
 
 // ChangedFile is one entry from a pull request's file diff.
 type ChangedFile struct {
-	Path    string
-	IsAdded bool // True when GitHub reports this file's diff status as "added"
+	Path      string
+	IsAdded   bool // True when GitHub reports this file's diff status as "added"
+	IsRemoved bool // True when GitHub reports this file's diff status as "removed"
 }
 
 func (c *Client) GetChangedFiles(prNumber int) ([]ChangedFile, error) {
@@ -70,7 +71,7 @@ func (c *Client) GetChangedFiles(prNumber int) ([]ChangedFile, error) {
 
 	result := make([]ChangedFile, len(files))
 	for i, f := range files {
-		result[i] = ChangedFile{Path: f.Filename, IsAdded: f.Status == "added"}
+		result[i] = ChangedFile{Path: f.Filename, IsAdded: f.Status == "added", IsRemoved: f.Status == "removed"}
 	}
 	return result, nil
 }

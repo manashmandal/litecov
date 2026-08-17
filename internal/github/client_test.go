@@ -21,6 +21,7 @@ func TestClient_GetChangedFiles(t *testing.T) {
 		}{
 			{Filename: "src/parser.go", Status: "modified"},
 			{Filename: "src/utils.go", Status: "added"},
+			{Filename: "src/legacy.go", Status: "removed"},
 		}
 		json.NewEncoder(w).Encode(files)
 	}))
@@ -38,8 +39,8 @@ func TestClient_GetChangedFiles(t *testing.T) {
 		t.Fatalf("GetChangedFiles() error = %v", err)
 	}
 
-	if len(files) != 2 {
-		t.Errorf("got %d files, want 2", len(files))
+	if len(files) != 3 {
+		t.Errorf("got %d files, want 3", len(files))
 	}
 	if files[0].Path != "src/parser.go" {
 		t.Errorf("files[0].Path = %v, want src/parser.go", files[0].Path)
@@ -47,8 +48,23 @@ func TestClient_GetChangedFiles(t *testing.T) {
 	if files[0].IsAdded {
 		t.Error("files[0].IsAdded should be false for status \"modified\"")
 	}
+	if files[0].IsRemoved {
+		t.Error("files[0].IsRemoved should be false for status \"modified\"")
+	}
 	if !files[1].IsAdded {
 		t.Error("files[1].IsAdded should be true for status \"added\"")
+	}
+	if files[1].IsRemoved {
+		t.Error("files[1].IsRemoved should be false for status \"added\"")
+	}
+	// issue #31: the diff's "removed" status must survive decoding so
+	// callers can tell a deleted file apart from one that's merely missing
+	// coverage data.
+	if files[2].IsAdded {
+		t.Error("files[2].IsAdded should be false for status \"removed\"")
+	}
+	if !files[2].IsRemoved {
+		t.Error("files[2].IsRemoved should be true for status \"removed\"")
 	}
 }
 

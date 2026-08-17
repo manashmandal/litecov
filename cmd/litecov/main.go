@@ -130,6 +130,7 @@ func main() {
 
 	var changedFiles []string
 	var addedFiles map[string]bool
+	var removedFiles map[string]bool
 	if *showFiles == "changed" && prNumber > 0 {
 		var changed []github.ChangedFile
 		changed, err = gh.GetChangedFiles(prNumber)
@@ -146,15 +147,20 @@ func main() {
 		}
 		// GitHub's changed-file paths are already clean, but normalize them
 		// too so both sides of every later comparison went through the
-		// same rules (issue #19). addedFiles is keyed the same way so
-		// NewComparison's IsNew lookups line up (issue #32).
+		// same rules (issue #19). addedFiles and removedFiles are keyed the
+		// same way so NewComparison's IsNew (issue #32) and IsDeleted
+		// (issue #31) lookups line up.
 		changedFiles = make([]string, len(changed))
 		addedFiles = make(map[string]bool, len(changed))
+		removedFiles = make(map[string]bool, len(changed))
 		for i, cf := range changed {
 			normalized := paths.NormalizeCoveragePath(cf.Path)
 			changedFiles[i] = normalized
 			if cf.IsAdded {
 				addedFiles[normalized] = true
+			}
+			if cf.IsRemoved {
+				removedFiles[normalized] = true
 			}
 		}
 	}
@@ -190,7 +196,7 @@ func main() {
 	// Generate comment with or without comparison
 	var commentBody string
 	if baseReport != nil {
-		comp := coverage.NewComparison(report, baseReport, changedFiles, addedFiles)
+		comp := coverage.NewComparison(report, baseReport, changedFiles, addedFiles, removedFiles)
 		commentBody = comment.FormatWithComparison(comp, opts)
 	} else {
 		commentBody = comment.Format(report, opts)
