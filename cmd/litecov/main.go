@@ -106,8 +106,12 @@ func main() {
 	}
 	normalizeReportPaths(report.Files, *pathPrefix, pathFixRules)
 
-	// Parse base coverage if provided
-	baseReport := loadBaseReport(*baseCoverageFile, *pathPrefix, pathFixRules)
+	// Parse base coverage if provided. baseErr is nil both when no base was
+	// requested and when one was requested and loaded fine; it's non-nil
+	// only for a base that was requested but couldn't be read, which is
+	// what lets the comment say so instead of looking identical to no base
+	// having been configured at all (issue #39).
+	baseReport, baseErr := loadBaseReport(*baseCoverageFile, *pathPrefix, pathFixRules)
 
 	gh := github.NewClient(token, owner, repo)
 
@@ -166,6 +170,9 @@ func main() {
 		SHA:          sha,
 		PRNumber:     prNumber,
 		BaseBranch:   *baseBranch,
+	}
+	if baseErr != nil {
+		opts.BaseError = baseErr.Error()
 	}
 	if strings.HasPrefix(*showFiles, "threshold:") {
 		val, _ := strconv.ParseFloat(strings.TrimPrefix(*showFiles, "threshold:"), 64)
@@ -285,36 +292,54 @@ func normalizeReportPaths(files []coverage.FileCoverage, prefix string, fixes []
 // file's directory as a prefix, so identical LCOV input produced different
 // paths on each side and NewComparison's lookup missed every file, each one
 // showing up as unmatched on both the head and base side of the comparison
-// (issue #29). Returns nil if path is empty or the file can't be opened,
-// format-detected, or parsed.
-func loadBaseReport(path, pathPrefix string, fixes []paths.PathFix) *coverage.Report {
+// (issue #29).
+//
+// Returns (nil, nil) when path is empty: no base comparison was requested.
+// Returns (nil, err) when a base *was* requested but couldn't be turned into
+// a report -- the file wouldn't open, its format couldn't be detected, or it
+// failed to parse. Every one of those used to return (nil, nil) the same as
+// the empty-path case, with only the open failure even reaching stderr, so a
+// misconfigured or corrupt base file made the comparison silently disappear
+// from the PR comment instead of explaining why (issue #39). err is logged
+// here so the reason shows up in the run's logs, and the caller threads it
+// into the PR comment so it shows up there too.
+func loadBaseReport(path, pathPrefix string, fixes []paths.PathFix) (*coverage.Report, error) {
 	if path == "" {
-		return nil
+		return nil, nil
 	}
 	baseFile, err := os.Open(path)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: Failed to open base coverage file: %v\n", err)
-		return nil
+		err = fmt.Errorf("opening base coverage file: %w", err)
+		fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
+		return nil, err
 	}
 	defer baseFile.Close()
 
 	detected, err := parser.DetectFormat(baseFile)
 	if err != nil {
-		return nil
+		err = fmt.Errorf("detecting base coverage format: %w", err)
+		fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
+		return nil, err
 	}
 	baseFile.Seek(0, 0)
 
 	bp, err := parser.GetParserWithPath(detected, path)
 	if err != nil {
-		return nil
+		err = fmt.Errorf("getting a %s parser for the base coverage file: %w", detected, err)
+		fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
+		return nil, err
 	}
 
-	baseReport, _ := bp.Parse(baseFile)
-	if baseReport != nil {
-		normalizeReportPaths(baseReport.Files, pathPrefix, fixes)
-		fmt.Printf("Loaded base coverage from: %s (%.2f%%)\n", path, baseReport.Coverage)
+	baseReport, err := bp.Parse(baseFile)
+	if err != nil {
+		err = fmt.Errorf("parsing base coverage file: %w", err)
+		fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
+		return nil, err
 	}
-	return baseReport
+
+	normalizeReportPaths(baseReport.Files, pathPrefix, fixes)
+	fmt.Printf("Loaded base coverage from: %s (%.2f%%)\n", path, baseReport.Coverage)
+	return baseReport, nil
 }
 
 func detectCoverageFile() string {

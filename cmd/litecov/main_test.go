@@ -11,21 +11,62 @@ import (
 )
 
 func TestLoadBaseReport_NoReport(t *testing.T) {
+	// An empty path is the only case where (nil, nil) is correct: no base
+	// comparison was requested at all. Every other way loadBaseReport can
+	// come back empty is a base that WAS requested but couldn't be read, and
+	// must return a non-nil error instead so the caller -- and the PR
+	// comment -- can tell the two apart (see
+	// TestLoadBaseReport_HardFailuresReturnError, issue #39).
+	report, err := loadBaseReport("", "", nil)
+	if report != nil || err != nil {
+		t.Errorf("loadBaseReport(\"\") = (%v, %v), want (nil, nil)", report, err)
+	}
+}
+
+// TestLoadBaseReport_HardFailuresReturnError reproduces issue #39: a base
+// coverage file that couldn't be opened, whose format couldn't be detected,
+// or that failed to parse into any files used to make loadBaseReport return
+// nil the same way an empty path does -- with no error to explain why, and
+// for two of these three cases, not even a line on stderr. The PR comment
+// then rendered as if no base had been configured at all, instead of saying
+// the comparison was requested but broken.
+func TestLoadBaseReport_HardFailuresReturnError(t *testing.T) {
 	tests := []struct {
-		name string
-		path string
+		name    string
+		content string
 	}{
-		{"empty path", ""},
-		{"missing file", filepath.Join(t.TempDir(), "does-not-exist.lcov")},
+		{name: "unrecognized content", content: "this is not a coverage report\njust plain text\n"},
+		{name: "lcov with no SF: record, from the issue's repro", content: "end_of_record\n"},
+		{name: "cobertura with no packages, from the issue's repro", content: "<coverage><packages></packages></coverage>"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := loadBaseReport(tt.path, "", nil); got != nil {
-				t.Errorf("loadBaseReport(%q) = %v, want nil", tt.path, got)
+			path := filepath.Join(t.TempDir(), "base.txt")
+			if err := os.WriteFile(path, []byte(tt.content), 0644); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+
+			report, err := loadBaseReport(path, "", nil)
+			if err == nil {
+				t.Fatal("loadBaseReport returned a nil error, want the failure reported")
+			}
+			if report != nil {
+				t.Errorf("loadBaseReport returned a non-nil report alongside an error: %v", report)
 			}
 		})
 	}
+
+	t.Run("missing file", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "does-not-exist.lcov")
+		report, err := loadBaseReport(path, "", nil)
+		if err == nil {
+			t.Fatal("loadBaseReport returned a nil error, want the open failure reported")
+		}
+		if report != nil {
+			t.Errorf("loadBaseReport returned a non-nil report alongside an error: %v", report)
+		}
+	})
 }
 
 func TestLoadBaseReport_SourcePrefixMatchesHead(t *testing.T) {
@@ -59,7 +100,10 @@ func TestLoadBaseReport_SourcePrefixMatchesHead(t *testing.T) {
 		t.Fatalf("head Parse: %v", err)
 	}
 
-	base := loadBaseReport(coverageFile, "", nil)
+	base, err := loadBaseReport(coverageFile, "", nil)
+	if err != nil {
+		t.Fatalf("loadBaseReport: %v", err)
+	}
 	if base == nil {
 		t.Fatal("loadBaseReport returned nil")
 	}

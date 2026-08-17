@@ -121,6 +121,61 @@ func TestFormat_ChangedEmptyDoesNotFallBackToAll(t *testing.T) {
 	}
 }
 
+// TestFormat_BaseError reproduces issue #39: a base coverage file that
+// couldn't be read used to make Format render exactly the layout it would
+// for no base having been requested at all, so the comparison silently
+// disappeared with no indication anything had gone wrong. BaseError set
+// means the comment must say so, while still showing head coverage as
+// normal.
+func TestFormat_BaseError(t *testing.T) {
+	report := &coverage.Report{
+		Files:        []coverage.FileCoverage{{Path: "src/a.go", LinesCovered: 5, LinesTotal: 10}},
+		TotalCovered: 5,
+		TotalLines:   10,
+		Coverage:     50,
+	}
+
+	opts := Options{
+		Title:     "Coverage Report",
+		ShowFiles: "all",
+		BaseError: "parsing base coverage file: no coverage data found: input contains no valid LCOV records",
+	}
+
+	result := Format(report, opts)
+
+	if !strings.Contains(result, "Base coverage unavailable") {
+		t.Error("comment does not explain that the configured base coverage file could not be read")
+	}
+	if !strings.Contains(result, "no coverage data found") {
+		t.Error("comment does not surface the underlying reason")
+	}
+	// The rest of the report still renders: a broken base shouldn't take
+	// down the head coverage numbers with it.
+	if !strings.Contains(result, "50.00%") {
+		t.Error("missing head coverage percentage")
+	}
+	if !strings.Contains(result, "src/a.go") {
+		t.Error("missing head coverage file")
+	}
+}
+
+// TestFormat_NoBaseError checks the common case doesn't regress: no
+// BaseError set means no "unavailable" note in the comment.
+func TestFormat_NoBaseError(t *testing.T) {
+	report := &coverage.Report{
+		Files:        []coverage.FileCoverage{{Path: "src/a.go", LinesCovered: 5, LinesTotal: 10}},
+		TotalCovered: 5,
+		TotalLines:   10,
+		Coverage:     50,
+	}
+
+	result := Format(report, Options{Title: "Coverage Report", ShowFiles: "all"})
+
+	if strings.Contains(result, "Base coverage unavailable") {
+		t.Error("comment should not mention base coverage when BaseError is unset")
+	}
+}
+
 func TestFindMissingFiles(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -668,6 +723,24 @@ func TestFormatHeader(t *testing.T) {
 		result := formatHeader(opts)
 		if !strings.Contains(result, "Coverage Report") {
 			t.Error("missing default title")
+		}
+	})
+}
+
+func TestFormatBaseError(t *testing.T) {
+	t.Run("empty when no error", func(t *testing.T) {
+		if result := formatBaseError(Options{}); result != "" {
+			t.Errorf("formatBaseError with no BaseError = %q, want empty", result)
+		}
+	})
+
+	t.Run("explains the failure when set", func(t *testing.T) {
+		result := formatBaseError(Options{BaseError: "opening base coverage file: open base.lcov: no such file or directory"})
+		if !strings.Contains(result, "Base coverage unavailable") {
+			t.Error("missing explanation that base coverage is unavailable")
+		}
+		if !strings.Contains(result, "no such file or directory") {
+			t.Error("missing underlying reason")
 		}
 	})
 }

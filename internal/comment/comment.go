@@ -22,6 +22,14 @@ type Options struct {
 	SHA          string
 	PRNumber     int
 	BaseBranch   string
+	// BaseError holds why a configured base coverage file couldn't be turned
+	// into a report -- it wouldn't open, its format couldn't be detected, or
+	// it failed to parse -- so Format can say so instead of rendering the
+	// same head-only layout it would if no base had been requested at all
+	// (issue #39). Left empty when no base was configured, and when one was
+	// configured and loaded fine, since that case calls FormatWithComparison
+	// instead of Format.
+	BaseError string
 }
 
 func Format(report *coverage.Report, opts Options) string {
@@ -31,6 +39,7 @@ func Format(report *coverage.Report, opts Options) string {
 	sb.WriteString("\n")
 
 	sb.WriteString(formatHeader(opts))
+	sb.WriteString(formatBaseError(opts))
 	sb.WriteString(formatQuickSummary(report))
 	sb.WriteString(formatCoverageDiff(report))
 
@@ -114,6 +123,19 @@ func formatHeader(opts Options) string {
 	}
 	logo := `<img src="https://raw.githubusercontent.com/manashmandal/litecov/main/logo.png" height="24" align="absmiddle">`
 	return fmt.Sprintf("## %s %s\n\n", logo, title)
+}
+
+// formatBaseError renders a note when a base coverage file was configured
+// but litecov couldn't turn it into a report. Without this, Format renders
+// exactly the layout it would for no base having been requested at all, so
+// a broken base-coverage-file input made the comparison silently disappear
+// instead of explaining why (issue #39).
+func formatBaseError(opts Options) string {
+	if opts.BaseError == "" {
+		return ""
+	}
+	return fmt.Sprintf("> ⚠️ **Base coverage unavailable:** a base coverage file was configured but could not be read (%s). Showing head coverage only, no comparison.\n\n",
+		opts.BaseError)
 }
 
 func formatQuickSummary(report *coverage.Report) string {
