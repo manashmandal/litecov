@@ -25,6 +25,7 @@ func main() {
 	goodThreshold := flag.Float64("good-threshold", 0, "Coverage % at/above which the report shows a passing status (0 = default of 80)")
 	warnThreshold := flag.Float64("warn-threshold", 0, "Coverage % at/above which the report shows a warning instead of a failing status (0 = default of 50)")
 	title := flag.String("title", "Coverage Report", "Comment title")
+	flagName := flag.String("flag", "", "Identifies this invocation when litecov runs more than once on one PR, scoping the comment marker and commit status context")
 	annotations := flag.Bool("annotations", false, "Output GitHub annotations for uncovered lines")
 	baseCoverageFile := flag.String("base-coverage-file", "", "Path to base branch coverage file for comparison")
 	baseBranch := flag.String("base-branch", "", "Base branch name for comparison display")
@@ -42,6 +43,9 @@ func main() {
 	}
 	if *pathFixesInput == "" {
 		*pathFixesInput = os.Getenv("INPUT_PATH_FIXES")
+	}
+	if *flagName == "" {
+		*flagName = os.Getenv("INPUT_FLAG")
 	}
 	*goodThreshold = resolveThreshold(*goodThreshold, os.Getenv("INPUT_GOOD_THRESHOLD"))
 	*warnThreshold = resolveThreshold(*warnThreshold, os.Getenv("INPUT_WARN_THRESHOLD"))
@@ -201,6 +205,7 @@ func main() {
 	repoURL := fmt.Sprintf("%s/%s", serverURL, repository)
 	opts := comment.Options{
 		Title:         *title,
+		Flag:          *flagName,
 		ShowFiles:     *showFiles,
 		ChangedFiles:  changedFiles,
 		RepoURL:       repoURL,
@@ -234,7 +239,7 @@ func main() {
 	}
 
 	if prNumber > 0 {
-		if err := postCoverageComment(gh, prNumber, comment.Marker, commentBody); err != nil {
+		if err := postCoverageComment(gh, prNumber, comment.MarkerFor(*flagName), commentBody); err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to post comment: %v\n", err)
 			os.Exit(1)
 		}
@@ -245,7 +250,7 @@ func main() {
 
 	if sha != "" {
 		state, description := commitStatusForCoverage(report.Coverage, *threshold)
-		if err := gh.SetCommitStatus(sha, state, description, "litecov", targetURL); err != nil {
+		if err := gh.SetCommitStatus(sha, state, description, commitStatusContext(*flagName), targetURL); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: Failed to set commit status: %v\n", err)
 		} else {
 			fmt.Printf("Commit status set: %s - %s\n", state, description)
@@ -257,7 +262,7 @@ func main() {
 		// covered repo, so litecov alone could never catch that; this status
 		// is scoped to just the lines the PR added.
 		patchState, patchDescription := commitStatusForPatchCoverage(opts.PatchCoverage, *patchThreshold)
-		if err := gh.SetCommitStatus(sha, patchState, patchDescription, "litecov/patch", targetURL); err != nil {
+		if err := gh.SetCommitStatus(sha, patchState, patchDescription, patchCommitStatusContext(*flagName), targetURL); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: Failed to set patch commit status: %v\n", err)
 		} else {
 			fmt.Printf("Patch commit status set: %s - %s\n", patchState, patchDescription)
@@ -346,6 +351,30 @@ func commitStatusForPatchCoverage(patch coverage.PatchCoverage, threshold float6
 		return "failure", fmt.Sprintf("%.2f%% patch coverage (minimum: %.2f%%)", pct, threshold)
 	}
 	return "success", fmt.Sprintf("%.2f%% patch coverage", pct)
+}
+
+// commitStatusContext returns the status context for the project-wide
+// coverage commit status: "litecov" by default, or "litecov/<flagName>"
+// when the flag input scopes this invocation to run alongside others
+// against the same commit. Before this, the context was the fixed string
+// literal "litecov", so a second litecov step in one workflow -- the normal
+// setup for a monorepo -- posted its status under the same context as the
+// first, and the last one to finish silently overwrote it (issue #54).
+func commitStatusContext(flagName string) string {
+	if flagName == "" {
+		return "litecov"
+	}
+	return "litecov/" + flagName
+}
+
+// patchCommitStatusContext is commitStatusContext's counterpart for the
+// patch coverage commit status: "litecov/patch" by default, or
+// "litecov/patch/<flagName>" when scoped the same way (issue #54).
+func patchCommitStatusContext(flagName string) string {
+	if flagName == "" {
+		return "litecov/patch"
+	}
+	return "litecov/patch/" + flagName
 }
 
 // commitStatusTargetURL builds the target_url shared by both commit

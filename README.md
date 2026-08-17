@@ -168,6 +168,7 @@ so it can diff them.
 | `good-threshold` | `0` (uses 80) | Coverage % at/above which the report marks a file or the project as passing |
 | `warn-threshold` | `0` (uses 50) | Coverage % at/above which the report warns instead of failing |
 | `title` | `Coverage Report` | Comment header |
+| `flag` | None | Identifies this run when litecov runs more than once on one PR (e.g. `backend`, `frontend`); scopes the comment marker and commit status context so runs don't overwrite each other |
 | `annotations` | `false` | Output GitHub annotations for uncovered lines |
 | `base-coverage-file` | None | Path to a base branch coverage file, enables comparison mode |
 | `base-branch` | PR base branch | Base branch name shown in the diff header |

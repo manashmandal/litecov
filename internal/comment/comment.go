@@ -13,8 +13,30 @@ import (
 
 const Marker = "<!-- litecov -->"
 
+// MarkerFor returns the HTML comment marker litecov writes at the top of a
+// PR comment and later searches for to find that comment again: the bare
+// Marker when flag is empty, or a flag-scoped variant, "<!-- litecov:<flag>
+// -->", otherwise. Before this, every invocation wrote the same fixed
+// Marker, so a second litecov step in one workflow -- the normal setup for
+// a monorepo posting separate backend and frontend reports -- found the
+// first step's comment and PATCHed over it instead of posting its own
+// (issue #54).
+func MarkerFor(flag string) string {
+	if flag == "" {
+		return Marker
+	}
+	return fmt.Sprintf("<!-- litecov:%s -->", flag)
+}
+
 type Options struct {
-	Title        string
+	Title string
+	// Flag identifies this invocation when litecov runs more than once
+	// against the same PR, e.g. one step per service in a monorepo. Empty by
+	// default, which keeps the plain Marker; set, it scopes the comment
+	// marker MarkerFor renders to "<!-- litecov:<Flag> -->" so multiple runs
+	// against one commit each get their own comment instead of overwriting
+	// each other's (issue #54).
+	Flag         string
 	ShowFiles    string
 	ChangedFiles []string
 	Threshold    float64
@@ -66,7 +88,7 @@ type Options struct {
 func Format(report *coverage.Report, opts Options) string {
 	var sb strings.Builder
 
-	sb.WriteString(Marker)
+	sb.WriteString(MarkerFor(opts.Flag))
 	sb.WriteString("\n")
 
 	sb.WriteString(formatHeader(opts))
@@ -138,7 +160,7 @@ func FormatWithComparison(comp *coverage.Comparison, opts Options) string {
 
 	var sb strings.Builder
 
-	sb.WriteString(Marker)
+	sb.WriteString(MarkerFor(opts.Flag))
 	sb.WriteString("\n")
 
 	sb.WriteString(formatHeader(opts))

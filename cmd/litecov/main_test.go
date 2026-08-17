@@ -299,6 +299,56 @@ func TestCommitStatusTargetURL(t *testing.T) {
 	}
 }
 
+// TestCommitStatusContext reproduces issue #54: the project coverage status
+// context was the fixed string literal "litecov", so a second litecov step
+// in one workflow -- the normal setup for a monorepo -- posted its status
+// under the same context as the first and the last one to finish silently
+// overwrote it. An empty flagName must keep the existing "litecov" context
+// so current single-invocation users see no change.
+func TestCommitStatusContext(t *testing.T) {
+	tests := []struct {
+		name     string
+		flagName string
+		want     string
+	}{
+		{"no flag keeps the existing context", "", "litecov"},
+		{"backend flag", "backend", "litecov/backend"},
+		{"frontend flag", "frontend", "litecov/frontend"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := commitStatusContext(tt.flagName)
+			if got != tt.want {
+				t.Errorf("commitStatusContext(%q) = %q, want %q", tt.flagName, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestPatchCommitStatusContext is TestCommitStatusContext's counterpart for
+// the patch coverage status, "litecov/patch" by default (issue #54).
+func TestPatchCommitStatusContext(t *testing.T) {
+	tests := []struct {
+		name     string
+		flagName string
+		want     string
+	}{
+		{"no flag keeps the existing context", "", "litecov/patch"},
+		{"backend flag", "backend", "litecov/patch/backend"},
+		{"frontend flag", "frontend", "litecov/patch/frontend"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := patchCommitStatusContext(tt.flagName)
+			if got != tt.want {
+				t.Errorf("patchCommitStatusContext(%q) = %q, want %q", tt.flagName, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestResolveGitHubHost guards issue #49: litecov hardcoded api.github.com
 // and github.com, so it could not run on GitHub Enterprise Server, where
 // GITHUB_API_URL and GITHUB_SERVER_URL point at the enterprise host instead.
@@ -724,20 +774,23 @@ func TestPostCoverageComment(t *testing.T) {
 
 	tests := []struct {
 		name         string
+		marker       string
 		listComments func(w http.ResponseWriter, r *http.Request)
 		wantErr      bool
 		wantCreate   int
 		wantUpdate   int
 	}{
 		{
-			name: "no existing comment creates one",
+			name:   "no existing comment creates one",
+			marker: marker,
 			listComments: func(w http.ResponseWriter, r *http.Request) {
 				json.NewEncoder(w).Encode([]struct{}{})
 			},
 			wantCreate: 1,
 		},
 		{
-			name: "existing comment gets updated in place",
+			name:   "existing comment gets updated in place",
+			marker: marker,
 			listComments: func(w http.ResponseWriter, r *http.Request) {
 				comments := []struct {
 					ID   int    `json:"id"`
@@ -748,7 +801,8 @@ func TestPostCoverageComment(t *testing.T) {
 			wantUpdate: 1,
 		},
 		{
-			name: "lookup failure is reported instead of falling through to create",
+			name:   "lookup failure is reported instead of falling through to create",
+			marker: marker,
 			listComments: func(w http.ResponseWriter, r *http.Request) {
 				// No rate-limit headers, so doRequest doesn't retry this (it
 				// reads as a plain permissions failure, not rate limiting).
@@ -756,6 +810,24 @@ func TestPostCoverageComment(t *testing.T) {
 				w.Write([]byte("forbidden"))
 			},
 			wantErr: true,
+		},
+		{
+			// issue #54: two litecov steps in one workflow used to share the
+			// same fixed marker, so the second step's lookup matched the
+			// first step's comment and PATCHed over it. A comment already on
+			// the PR under one flag's marker must not match a lookup for a
+			// different flag's marker; the second step must create its own
+			// comment instead of overwriting the first.
+			name:   "a different flag's existing comment does not match, creates a new one instead",
+			marker: "<!-- litecov:frontend -->",
+			listComments: func(w http.ResponseWriter, r *http.Request) {
+				comments := []struct {
+					ID   int    `json:"id"`
+					Body string `json:"body"`
+				}{{ID: 42, Body: "<!-- litecov:backend -->\nbackend report"}}
+				json.NewEncoder(w).Encode(comments)
+			},
+			wantCreate: 1,
 		},
 	}
 
@@ -779,7 +851,7 @@ func TestPostCoverageComment(t *testing.T) {
 			defer server.Close()
 
 			gh := &github.Client{Token: "test-token", Owner: "owner", Repo: "repo", BaseURL: server.URL}
-			err := postCoverageComment(gh, 1, marker, "report body")
+			err := postCoverageComment(gh, 1, tt.marker, "report body")
 
 			if (err != nil) != tt.wantErr {
 				t.Errorf("postCoverageComment() error = %v, wantErr %v", err, tt.wantErr)

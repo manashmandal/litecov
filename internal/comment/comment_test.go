@@ -50,6 +50,61 @@ func TestFormat(t *testing.T) {
 	}
 }
 
+// TestMarkerFor reproduces issue #54: Marker used to be a fixed constant
+// with no input to override it, so two litecov steps in one workflow wrote
+// the same marker and the second one's upsert lookup matched the first
+// step's comment. An empty flag must keep the existing bare Marker so
+// current single-invocation users see no change; a non-empty flag must
+// produce a distinct marker per flag.
+func TestMarkerFor(t *testing.T) {
+	tests := []struct {
+		name string
+		flag string
+		want string
+	}{
+		{"empty flag keeps the existing bare marker", "", Marker},
+		{"backend flag", "backend", "<!-- litecov:backend -->"},
+		{"frontend flag", "frontend", "<!-- litecov:frontend -->"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := MarkerFor(tt.flag)
+			if got != tt.want {
+				t.Errorf("MarkerFor(%q) = %q, want %q", tt.flag, got, tt.want)
+			}
+		})
+	}
+
+	backend := MarkerFor("backend")
+	frontend := MarkerFor("frontend")
+	if backend == frontend {
+		t.Errorf("MarkerFor(\"backend\") and MarkerFor(\"frontend\") must differ, both = %q", backend)
+	}
+}
+
+// TestFormat_FlagScopesMarker reproduces issue #54's effect on the rendered
+// comment: with Options.Flag set, Format must write the flag-scoped marker,
+// not the bare Marker a second, differently-flagged step would also be
+// searching for.
+func TestFormat_FlagScopesMarker(t *testing.T) {
+	report := &coverage.Report{
+		Files:        []coverage.FileCoverage{{Path: "src/a.go", LinesCovered: 5, LinesTotal: 10}},
+		TotalCovered: 5,
+		TotalLines:   10,
+		Coverage:     50,
+	}
+
+	result := Format(report, Options{ShowFiles: "all", Flag: "backend"})
+
+	if !strings.HasPrefix(result, "<!-- litecov:backend -->\n") {
+		t.Errorf("expected the comment to start with the flag-scoped marker, got: %q", result[:min(60, len(result))])
+	}
+	if strings.Contains(result, Marker) {
+		t.Errorf("a flagged comment must not also carry the bare marker a different flag's step is searching for: %q", result[:min(60, len(result))])
+	}
+}
+
 // TestFormat_ImpactedFilesNotCollapsed reproduces issue #21: every number in
 // the report used to render behind a collapsed <details> block, so a
 // reviewer needed two clicks to see which file lost coverage. The Impacted
