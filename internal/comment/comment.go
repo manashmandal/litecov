@@ -538,7 +538,13 @@ func formatUncoveredLines(lines []int, repoURL, sha, filePath string) string {
 		return "-"
 	}
 
-	sort.Ints(lines)
+	// Copy before sorting: lines is the caller's FileCoverage.UncoveredLines
+	// slice, and formatting it for display must not reorder the report the
+	// caller still holds (issue #74).
+	sorted := make([]int, len(lines))
+	copy(sorted, lines)
+	sort.Ints(sorted)
+	lines = sorted
 
 	// rangeSizes tracks the line count behind each entry in ranges, in the
 	// same order, so the truncation count below can be expressed in lines

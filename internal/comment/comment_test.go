@@ -621,6 +621,24 @@ func TestFormatUncoveredLines_Empty(t *testing.T) {
 	}
 }
 
+func TestFormatUncoveredLines_DoesNotMutateInput(t *testing.T) {
+	// Issue #74: formatUncoveredLines used to sort.Ints(lines) directly on
+	// the caller's slice, which is FileCoverage.UncoveredLines in
+	// production. Formatting a report for display must not reorder the
+	// report the caller still holds.
+	lines := []int{9, 3, 7, 1, 5}
+	original := []int{9, 3, 7, 1, 5}
+
+	formatUncoveredLines(lines, "", "", "")
+
+	for i, v := range lines {
+		if v != original[i] {
+			t.Errorf("formatUncoveredLines mutated its input: got %v, want %v", lines, original)
+			break
+		}
+	}
+}
+
 func TestFormatRange_WithHyperlink(t *testing.T) {
 	result := formatRange(10, 15, "https://github.com/test/repo", "abc123", "file.go")
 
