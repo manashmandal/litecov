@@ -253,6 +253,80 @@ func TestNewComparison_WithBase(t *testing.T) {
 	}
 }
 
+// TestNewComparison_UncoveredLines reproduces issue #44: the comparison
+// table's Δ column and the no-base table's Uncovered Lines column used to be
+// mutually exclusive, because FileChange carried no uncovered-line data at
+// all. A file's head-report uncovered lines must survive into its
+// FileChange the same way HeadCoverage and Delta do.
+func TestNewComparison_UncoveredLines(t *testing.T) {
+	head := &Report{
+		Files: []FileCoverage{
+			{Path: "a.go", LinesCovered: 90, LinesTotal: 100, UncoveredLines: []int{12, 13, 40}},
+		},
+		Coverage: 90.0,
+	}
+	base := &Report{
+		Files: []FileCoverage{
+			{Path: "a.go", LinesCovered: 88, LinesTotal: 100},
+		},
+		Coverage: 88.0,
+	}
+
+	comp := NewComparison(head, base, nil, nil, nil)
+
+	if len(comp.FileChanges) != 1 {
+		t.Fatalf("FileChanges length = %v, want 1", len(comp.FileChanges))
+	}
+
+	got := comp.FileChanges[0].UncoveredLines
+	if len(got) != 3 {
+		t.Fatalf("UncoveredLines = %v, want 3 entries", got)
+	}
+	for i, want := range []int{12, 13, 40} {
+		if got[i] != want {
+			t.Errorf("UncoveredLines[%d] = %d, want %d", i, got[i], want)
+		}
+	}
+}
+
+// TestNewComparison_UncoveredLines_BaseOnlyFile covers a FileChange built
+// from base data with no head measurement at all (NewComparison's
+// base-only-file pass, issue #31): UncoveredLines must stay nil rather than
+// carrying over the base file's uncovered lines, the same "nothing to
+// measure" reasoning NoCoverage already applies to HeadCoverage (issue #44).
+func TestNewComparison_UncoveredLines_BaseOnlyFile(t *testing.T) {
+	head := &Report{
+		Files: []FileCoverage{
+			{Path: "a.go", LinesCovered: 10, LinesTotal: 10},
+		},
+		Coverage: 100.0,
+	}
+	base := &Report{
+		Files: []FileCoverage{
+			{Path: "a.go", LinesCovered: 10, LinesTotal: 10},
+			{Path: "gone.go", LinesCovered: 5, LinesTotal: 10, UncoveredLines: []int{1, 2}},
+		},
+		Coverage: 75.0,
+	}
+
+	comp := NewComparison(head, base, nil, nil, nil)
+
+	var goneChange FileChange
+	found := false
+	for _, fc := range comp.FileChanges {
+		if fc.Path == "gone.go" {
+			goneChange = fc
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("gone.go should appear in FileChanges even though it's absent from head")
+	}
+	if goneChange.UncoveredLines != nil {
+		t.Errorf("UncoveredLines = %v, want nil: gone.go has no head measurement to report lines from", goneChange.UncoveredLines)
+	}
+}
+
 func TestNewComparison_NoStatements(t *testing.T) {
 	// A file with no coverable lines (e.g. an empty __init__.py) has
 	// nothing to measure. Percentage() falls back to 0 for LinesTotal ==

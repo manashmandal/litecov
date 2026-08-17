@@ -75,6 +75,14 @@ type FileChange struct {
 	HeadCoverage float64
 	BaseCoverage float64
 	Delta        float64
+	// UncoveredLines carries this file's head-report uncovered line numbers,
+	// the same data FileCoverage.UncoveredLines holds for the no-base table.
+	// Without it, the comparison table's Uncovered Lines column had nothing
+	// to show even though the head report measures it the same way whether
+	// or not a base was configured (issue #44). Left nil when there is no
+	// head measurement for the row (NoCoverage, IsDeleted, or a file that
+	// only exists in base).
+	UncoveredLines []int
 	// IsNew is true when GitHub's PR diff reports this file's status as
 	// "added". It comes from the diff, not from the file's absence in the
 	// base coverage report: a file can be missing from the base report
@@ -174,8 +182,9 @@ func NewComparison(head, base *Report, changedFiles []string, addedFiles, remove
 			// headFile.Percentage() falls back to 0 for LinesTotal == 0, so
 			// this is what lets the comparison table tell "nothing to
 			// measure" apart from "measured, nothing covered" (issue #35).
-			NoStatements: headFile.LinesTotal == 0,
-			IsNew:        addedFiles[filePath],
+			NoStatements:   headFile.LinesTotal == 0,
+			IsNew:          addedFiles[filePath],
+			UncoveredLines: headFile.UncoveredLines,
 		}
 
 		baseFile, exists := baseFileMap[headFile.Path]

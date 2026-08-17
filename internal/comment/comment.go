@@ -408,14 +408,27 @@ func formatImpactedFilesWithDelta(fileChanges []coverage.FileChange, opts Option
 	var sb strings.Builder
 
 	sb.WriteString(fmt.Sprintf("**Impacted Files (%d)**\n\n", len(fileChanges)))
-	sb.WriteString("| File | Coverage | \u0394 | Status |\n")
-	sb.WriteString("|------|----------|---|--------|\n")
+	// Uncovered Lines sits next to Δ instead of being replaced by it: before
+	// this, the no-base table's Uncovered Lines and this table's Δ were
+	// mutually exclusive, so the only actionable column in the report
+	// disappeared in whichever mode a PR run actually used (issue #44).
+	sb.WriteString("| File | Coverage | \u0394 | Uncovered Lines | Status |\n")
+	sb.WriteString("|------|----------|---|-----------------|--------|\n")
 
 	for _, fc := range fileChanges {
 		fileName := formatFileName(fc.Path, opts)
 		deltaStr := formatFileDelta(fc)
 		coverageStr := fmt.Sprintf("`%.2f%%`", fc.HeadCoverage)
 		emoji := getStatusEmoji(fc.HeadCoverage)
+		// Same patch-scoped fallback as formatImpactedFiles: a file with
+		// patch data reports only the PR-added lines that are still
+		// uncovered, not every uncovered line the whole file has ever had
+		// (issue #9).
+		uncovered := fc.UncoveredLines
+		if patch, ok := opts.FilePatches[fc.Path]; ok {
+			uncovered = patch.UncoveredLines
+		}
+		uncoveredStr := formatUncoveredLines(uncovered, opts.RepoURL, opts.SHA, fc.Path)
 		// A file with no coverable lines has nothing to measure, not 0%
 		// coverage: HeadCoverage falls back to 0 for LinesTotal == 0, which
 		// would otherwise render identically to a file whose statements
@@ -423,6 +436,7 @@ func formatImpactedFilesWithDelta(fileChanges []coverage.FileChange, opts Option
 		if fc.NoStatements {
 			coverageStr = "`no statements`"
 			emoji = "➖"
+			uncoveredStr = "-"
 		}
 		// A file absent from the coverage report has nothing to measure
 		// either: HeadCoverage falls back to 0 the same way, which would
@@ -434,6 +448,7 @@ func formatImpactedFilesWithDelta(fileChanges []coverage.FileChange, opts Option
 		if fc.NoCoverage {
 			coverageStr = "`no coverage data`"
 			emoji = "❓"
+			uncoveredStr = "-"
 		}
 		// A file the PR diff reports as removed has no head measurement for
 		// a known reason: it doesn't exist anymore. Show what it measured
@@ -447,8 +462,9 @@ func formatImpactedFilesWithDelta(fileChanges []coverage.FileChange, opts Option
 				coverageStr = fmt.Sprintf("`%.2f%%`", fc.BaseCoverage)
 			}
 			emoji = "🗑️"
+			uncoveredStr = "-"
 		}
-		sb.WriteString(fmt.Sprintf("| %s | %s | %s | %s |\n", fileName, coverageStr, deltaStr, emoji))
+		sb.WriteString(fmt.Sprintf("| %s | %s | %s | %s | %s |\n", fileName, coverageStr, deltaStr, uncoveredStr, emoji))
 	}
 
 	sb.WriteString("\n")

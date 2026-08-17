@@ -1588,6 +1588,71 @@ func TestFormatImpactedFilesWithDelta(t *testing.T) {
 	}
 }
 
+// TestFormatImpactedFilesWithDelta_UncoveredLines reproduces issue #44: the
+// comparison table used to drop Uncovered Lines entirely in favor of Δ, so a
+// PR run configured with a base coverage file lost the only actionable
+// column in the report. Both must render in the same row.
+func TestFormatImpactedFilesWithDelta_UncoveredLines(t *testing.T) {
+	fileChanges := []coverage.FileChange{
+		{
+			Path:           "src/parser.go",
+			HeadCoverage:   94.00,
+			BaseCoverage:   92.00,
+			Delta:          2.00,
+			UncoveredLines: []int{12, 13, 40},
+		},
+	}
+
+	result := formatImpactedFilesWithDelta(fileChanges, Options{})
+
+	if !strings.Contains(result, "Uncovered Lines") {
+		t.Error("comparison table is missing the Uncovered Lines column header")
+	}
+	if !strings.Contains(result, "L12-13") {
+		t.Errorf("missing uncovered line range in %q", result)
+	}
+	if !strings.Contains(result, "L40") {
+		t.Errorf("missing uncovered line 40 in %q", result)
+	}
+	if !strings.Contains(result, "`+2.00%`") {
+		t.Errorf("Δ must still render alongside Uncovered Lines, not be replaced by it: %q", result)
+	}
+}
+
+// TestFormatImpactedFilesWithDelta_UsesPatchCoverageWhenAvailable is the
+// comparison-table counterpart of
+// TestFormatImpactedFiles_UsesPatchCoverageWhenAvailable (issue #9): a file
+// with patch data must show only its PR-added uncovered lines, not every
+// uncovered line the whole file has ever had.
+func TestFormatImpactedFilesWithDelta_UsesPatchCoverageWhenAvailable(t *testing.T) {
+	fileChanges := []coverage.FileChange{
+		{
+			Path:           "big.go",
+			HeadCoverage:   95.00,
+			BaseCoverage:   95.00,
+			Delta:          0,
+			UncoveredLines: []int{10, 500, 501, 502, 900},
+		},
+	}
+	opts := Options{
+		FilePatches: map[string]coverage.FilePatch{
+			"big.go": {
+				Coverage:       coverage.PatchCoverage{Covered: 0, Total: 3},
+				UncoveredLines: []int{500, 501, 502},
+			},
+		},
+	}
+
+	result := formatImpactedFilesWithDelta(fileChanges, opts)
+
+	if strings.Contains(result, "L10") || strings.Contains(result, "L900") {
+		t.Errorf("Uncovered Lines must be restricted to the diff, not the whole file's uncovered lines: %q", result)
+	}
+	if !strings.Contains(result, "L500-502") {
+		t.Errorf("missing the patch's own uncovered range in %q", result)
+	}
+}
+
 func TestFormatImpactedFilesWithDelta_NoStatements(t *testing.T) {
 	// A file with no coverable lines has nothing to measure, not 0%
 	// coverage. Before this was tracked on FileChange, HeadCoverage's
@@ -1685,6 +1750,41 @@ func TestFormatImpactedFilesWithDelta_IsDeleted_NoBaseData(t *testing.T) {
 	}
 	if !strings.Contains(result, "`removed`") {
 		t.Error("missing the removed marker for a deleted file with no base data")
+	}
+}
+
+// TestFormatImpactedFilesWithDelta_UncoveredLines_NoHeadData checks that a
+// row with no head measurement (NoStatements, NoCoverage, or IsDeleted)
+// renders "-" for Uncovered Lines instead of stale or zero-value line data,
+// matching how those rows already fall back for Coverage (issue #44).
+func TestFormatImpactedFilesWithDelta_UncoveredLines_NoHeadData(t *testing.T) {
+	fileChanges := []coverage.FileChange{
+		{Path: "src/__init__.py", NoStatements: true},
+		{Path: "internal/bar/b.go", NoCoverage: true},
+		{Path: "internal/bar/c.go", IsDeleted: true, BaseCoverage: 100},
+	}
+
+	result := formatImpactedFilesWithDelta(fileChanges, Options{})
+
+	lines := strings.Split(result, "\n")
+	for _, path := range []string{"src/__init__.py", "internal/bar/b.go", "internal/bar/c.go"} {
+		found := false
+		for _, line := range lines {
+			if !strings.Contains(line, path) {
+				continue
+			}
+			found = true
+			cells := strings.Split(line, "|")
+			if len(cells) < 5 {
+				t.Fatalf("row for %s has too few columns: %q", path, line)
+			}
+			if got := strings.TrimSpace(cells[4]); got != "-" {
+				t.Errorf("Uncovered Lines for %s = %q, want \"-\"", path, got)
+			}
+		}
+		if !found {
+			t.Errorf("missing row for %s", path)
+		}
 	}
 }
 
