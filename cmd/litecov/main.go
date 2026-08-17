@@ -76,6 +76,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	// GITHUB_SHA is the merge commit on a pull_request-shaped event, not the
+	// PR's head commit; prefer the head SHA out of the event payload when
+	// one is available and leave sha as GITHUB_SHA otherwise (issue #33).
+	event, err := loadEvent(eventPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to read event payload for head SHA: %v\n", err)
+	} else {
+		sha = resolveSHA(sha, event)
+	}
+
 	if *coverageFile == "" {
 		*coverageFile = detectCoverageFile()
 		if *coverageFile == "" {
@@ -392,20 +402,44 @@ func resolveGitHubHost(envValue, defaultValue string) string {
 }
 
 // gitHubEventPayload is the subset of a GitHub Actions event payload that
-// carries a pull request number. Where that number lives depends on the
+// carries a pull request number and, for events triggered directly by a
+// pull request, its head commit SHA. Where the number lives depends on the
 // event type: a top-level "number" for pull_request and
 // pull_request_target, "pull_request.number" for pull_request_review, and
-// "check_suite.pull_requests[0].number" for check_suite.
+// "check_suite.pull_requests[0].number" for check_suite. The head SHA, when
+// the event has one, is always at "pull_request.head.sha" (issue #33).
 type gitHubEventPayload struct {
 	Number      int `json:"number"`
 	PullRequest struct {
 		Number int `json:"number"`
+		Head   struct {
+			SHA string `json:"sha"`
+		} `json:"head"`
 	} `json:"pull_request"`
 	CheckSuite struct {
 		PullRequests []struct {
 			Number int `json:"number"`
 		} `json:"pull_requests"`
 	} `json:"check_suite"`
+}
+
+// loadEvent reads and parses the GITHUB_EVENT_PATH payload at eventPath.
+// Returns a zero-value payload, not an error, for an empty eventPath -- a
+// direct binary invocation outside Actions -- since that's not a failure,
+// just nothing to parse. err is non-nil only when eventPath was set but the
+// file couldn't be read or didn't parse as JSON, so a caller can tell "no
+// event data" apart from "the event data is broken."
+func loadEvent(eventPath string) (gitHubEventPayload, error) {
+	var event gitHubEventPayload
+	if eventPath == "" {
+		return event, nil
+	}
+	data, err := os.ReadFile(eventPath)
+	if err != nil {
+		return event, err
+	}
+	err = json.Unmarshal(data, &event)
+	return event, err
 }
 
 // getPRNumber reads the PR number out of the GITHUB_EVENT_PATH payload,
@@ -443,6 +477,26 @@ func getPRNumber(eventPath, eventName string) (int, error) {
 	default:
 		return event.Number, nil
 	}
+}
+
+// resolveSHA decides which commit SHA the PR comment's links and the commit
+// statuses are attached to. On a pull_request-shaped event -- pull_request,
+// pull_request_target, pull_request_review -- githubSHA (GITHUB_SHA) is not
+// the PR's head commit, it's the ephemeral merge commit on
+// refs/pull/N/merge. That commit isn't part of the PR branch, so a status
+// posted against it never appears in the PR's checks list and can never be
+// picked as a required status check under branch protection, and a blob or
+// line link built from it points at a commit the PR doesn't contain
+// (issue #33). event.PullRequest.Head.SHA -- present in the event payload
+// for exactly those event types -- is the actual PR head commit and wins
+// whenever it's set. A push or any other event whose payload has no
+// "pull_request" object leaves it empty, so githubSHA is returned
+// unchanged, which is already correct there.
+func resolveSHA(githubSHA string, event gitHubEventPayload) string {
+	if event.PullRequest.Head.SHA != "" {
+		return event.PullRequest.Head.SHA
+	}
+	return githubSHA
 }
 
 // noPRNumberWarning formats the line main prints when getPRNumber resolved

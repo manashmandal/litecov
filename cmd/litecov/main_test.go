@@ -402,6 +402,110 @@ func TestGetPRNumber(t *testing.T) {
 	})
 }
 
+// TestResolveSHA reproduces issue #33: commit statuses and PR comment links
+// were built from GITHUB_SHA, which on a pull_request-shaped event is the
+// ephemeral merge commit on refs/pull/N/merge, not the PR's head commit. A
+// status posted on the merge commit never shows up in the PR's checks list
+// and can never be picked as a required status check under branch
+// protection, and a comment link built from it points at a commit the PR
+// doesn't actually contain.
+func TestResolveSHA(t *testing.T) {
+	tests := []struct {
+		name      string
+		githubSHA string
+		content   string
+		want      string
+	}{
+		{
+			name:      "pull_request: head SHA from the event payload wins over the merge commit, from the issue's repro",
+			githubSHA: "merge0000000000000000000000000000000000",
+			content:   `{"action":"opened","number":42,"pull_request":{"number":42,"head":{"sha":"headc0mmit00000000000000000000000000"}}}`,
+			want:      "headc0mmit00000000000000000000000000",
+		},
+		{
+			name:      "pull_request_target: same shape as pull_request",
+			githubSHA: "merge0000000000000000000000000000000000",
+			content:   `{"action":"opened","number":42,"pull_request":{"number":42,"head":{"sha":"headc0mmit00000000000000000000000000"}}}`,
+			want:      "headc0mmit00000000000000000000000000",
+		},
+		{
+			name:      "pull_request_review: head SHA nested the same way, under pull_request.head.sha",
+			githubSHA: "merge0000000000000000000000000000000000",
+			content:   `{"action":"submitted","review":{"id":1},"pull_request":{"number":42,"head":{"sha":"headc0mmit00000000000000000000000000"}}}`,
+			want:      "headc0mmit00000000000000000000000000",
+		},
+		{
+			name:      "push: no pull_request object in the payload, GITHUB_SHA is already the head commit",
+			githubSHA: "abc123",
+			content:   `{"ref":"refs/heads/main","commits":[]}`,
+			want:      "abc123",
+		},
+		{
+			name:      "check_suite: no top-level pull_request object, GITHUB_SHA is left untouched",
+			githubSHA: "abc123",
+			content:   `{"action":"completed","check_suite":{"pull_requests":[{"number":42}]}}`,
+			want:      "abc123",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "event.json")
+			if err := os.WriteFile(path, []byte(tt.content), 0644); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+
+			event, err := loadEvent(path)
+			if err != nil {
+				t.Fatalf("loadEvent returned an error: %v", err)
+			}
+
+			got := resolveSHA(tt.githubSHA, event)
+			if got != tt.want {
+				t.Errorf("resolveSHA(%q, loadEvent(%q)) = %q, want %q", tt.githubSHA, tt.content, got, tt.want)
+			}
+		})
+	}
+
+	t.Run("empty event path falls back to GITHUB_SHA", func(t *testing.T) {
+		event, err := loadEvent("")
+		if err != nil {
+			t.Fatalf("loadEvent(\"\") returned an error: %v", err)
+		}
+		got := resolveSHA("abc123", event)
+		if got != "abc123" {
+			t.Errorf("resolveSHA(\"abc123\", loadEvent(\"\")) = %q, want %q", got, "abc123")
+		}
+	})
+
+	t.Run("missing event file falls back to GITHUB_SHA", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "does-not-exist.json")
+		event, err := loadEvent(path)
+		if err == nil {
+			t.Fatal("loadEvent(missing) returned a nil error, want the read failure reported")
+		}
+		got := resolveSHA("abc123", event)
+		if got != "abc123" {
+			t.Errorf("resolveSHA(\"abc123\", loadEvent(missing)) = %q, want %q", got, "abc123")
+		}
+	})
+
+	t.Run("malformed JSON returns an error, GITHUB_SHA is left untouched", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "event.json")
+		if err := os.WriteFile(path, []byte("{not valid json"), 0644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		event, err := loadEvent(path)
+		if err == nil {
+			t.Fatal("loadEvent(malformed) returned a nil error, want the parse failure reported")
+		}
+		got := resolveSHA("abc123", event)
+		if got != "abc123" {
+			t.Errorf("resolveSHA(\"abc123\", loadEvent(malformed)) = %q, want %q", got, "abc123")
+		}
+	})
+}
+
 // TestNoPRNumberWarning guards against the message regressing back to a
 // plain, easy-to-miss log line. Before issue #82's fix, main printed "No PR
 // number found, skipping comment" with fmt.Println -- indistinguishable
