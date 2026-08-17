@@ -157,6 +157,17 @@ func main() {
 	}
 	normalizeReportPaths(report.Files, *pathPrefix, pathFixRules)
 
+	// Written here, right after the report's totals are known, rather than
+	// at the end of main after the comment and commit status calls below.
+	// GetChangedFiles, postCoverageComment, and the threshold checks near
+	// the end of main all os.Exit(1) on some path, and every one of those
+	// used to skip the write entirely -- coverage could be fully computed
+	// and every output still come back empty, e.g. a fork PR's read-only
+	// token or a bad GITHUB_TOKEN 401ing on the comment POST (issue #88).
+	if err := writeGitHubOutput(os.Getenv("GITHUB_OUTPUT"), report); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to write GITHUB_OUTPUT: %v\n", err)
+	}
+
 	// Parse base coverage if provided. baseErr is nil both when no base was
 	// requested and when one was requested and loaded fine; it's non-nil
 	// only for a base that was requested but couldn't be read, which is
@@ -290,17 +301,6 @@ func main() {
 	fmt.Printf("\nCoverage: %.2f%%\n", report.Coverage)
 	fmt.Printf("Lines: %d/%d\n", report.TotalCovered, report.TotalLines)
 	fmt.Printf("Files: %d\n", len(report.Files))
-
-	if ghOutput := os.Getenv("GITHUB_OUTPUT"); ghOutput != "" {
-		f, err := os.OpenFile(ghOutput, os.O_APPEND|os.O_WRONLY, 0644)
-		if err == nil {
-			fmt.Fprintf(f, "coverage=%.2f\n", report.Coverage)
-			fmt.Fprintf(f, "lines-covered=%d\n", report.TotalCovered)
-			fmt.Fprintf(f, "lines-total=%d\n", report.TotalLines)
-			fmt.Fprintf(f, "files-count=%d\n", len(report.Files))
-			f.Close()
-		}
-	}
 
 	if *threshold > 0 && report.Coverage < *threshold {
 		fmt.Fprintf(os.Stderr, "\nCoverage %.2f%% is below threshold %.2f%%\n", report.Coverage, *threshold)
@@ -673,6 +673,36 @@ func normalizeReportPaths(files []coverage.FileCoverage, prefix string, fixes []
 	for i := range files {
 		files[i].Path = paths.NormalizeAndFixPath(files[i].Path, prefix, fixes)
 	}
+}
+
+// writeGitHubOutput appends litecov's four outputs -- coverage,
+// lines-covered, lines-total, files-count -- to the GITHUB_OUTPUT file at
+// path, in the key=value form GitHub Actions reads step outputs from.
+// Returns nil immediately when path is empty: GITHUB_OUTPUT is unset on a
+// direct binary invocation outside Actions, which isn't a failure.
+//
+// os.O_CREATE is required here rather than just O_APPEND|O_WRONLY. GitHub
+// Actions always creates the GITHUB_OUTPUT file before a step runs, but a
+// direct invocation with GITHUB_OUTPUT pointed at a path that doesn't exist
+// yet used to fail outright instead of creating it (issue #88).
+//
+// %.2f and %d can't produce a newline or an "=", so the key=value form needs
+// no heredoc delimiter.
+func writeGitHubOutput(path string, report *coverage.Report) error {
+	if path == "" {
+		return nil
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	fmt.Fprintf(f, "coverage=%.2f\n", report.Coverage)
+	fmt.Fprintf(f, "lines-covered=%d\n", report.TotalCovered)
+	fmt.Fprintf(f, "lines-total=%d\n", report.TotalLines)
+	fmt.Fprintf(f, "files-count=%d\n", len(report.Files))
+	return nil
 }
 
 // loadBaseReport parses the base coverage file at path the same way the head

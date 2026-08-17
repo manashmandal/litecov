@@ -820,6 +820,79 @@ func TestLoadBaseReport_SourcePrefixMatchesHead(t *testing.T) {
 	}
 }
 
+// TestWriteGitHubOutput reproduces issue #88's two GITHUB_OUTPUT bugs.
+// os.OpenFile was called without os.O_CREATE, so a GITHUB_OUTPUT file that
+// doesn't already exist failed to open instead of being created, and the
+// open error was checked with "if err == nil" and no else, so that failure
+// -- and any other -- was silent: a workflow reading the outputs saw empty
+// strings with nothing in the log explaining why.
+//
+// This also stands in for the fix's main change: moving the write ahead of
+// postCoverageComment, GetChangedFiles, and the threshold checks in main, so
+// none of their os.Exit(1) paths can skip it. writeGitHubOutput no longer
+// touches any of those, which is what makes calling it immediately after
+// the report is parsed possible; confirmed by hand against the built binary
+// using the issue's own repro (fake GITHUB_TOKEN, 401 on the comment POST,
+// GITHUB_OUTPUT still gets all four keys).
+func TestWriteGitHubOutput(t *testing.T) {
+	report := &coverage.Report{
+		Files:        []coverage.FileCoverage{{Path: "a.go"}, {Path: "b.go"}},
+		TotalCovered: 4,
+		TotalLines:   6,
+		Coverage:     4.0 / 6.0 * 100,
+	}
+	const want = "coverage=66.67\nlines-covered=4\nlines-total=6\nfiles-count=2\n"
+
+	t.Run("empty path is a no-op", func(t *testing.T) {
+		// GITHUB_OUTPUT is unset on a direct binary invocation outside
+		// Actions; that's not a failure.
+		if err := writeGitHubOutput("", report); err != nil {
+			t.Errorf("writeGitHubOutput(\"\", ...) = %v, want nil", err)
+		}
+	})
+
+	t.Run("creates a file that doesn't exist yet", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "new-output.txt")
+		if err := writeGitHubOutput(path, report); err != nil {
+			t.Fatalf("writeGitHubOutput: %v", err)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("ReadFile: %v", err)
+		}
+		if string(got) != want {
+			t.Errorf("file content = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("appends to an existing file instead of overwriting it", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "output.txt")
+		if err := os.WriteFile(path, []byte("previous-step-output=1\n"), 0644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		if err := writeGitHubOutput(path, report); err != nil {
+			t.Fatalf("writeGitHubOutput: %v", err)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("ReadFile: %v", err)
+		}
+		if string(got) != "previous-step-output=1\n"+want {
+			t.Errorf("file content = %q, want the existing line preserved and litecov's four keys appended after it", got)
+		}
+	})
+
+	t.Run("an open failure is reported instead of swallowed", func(t *testing.T) {
+		// A parent directory that doesn't exist is an open failure
+		// os.O_CREATE can't paper over, standing in for any other reason
+		// GITHUB_OUTPUT couldn't be opened.
+		path := filepath.Join(t.TempDir(), "missing-parent", "output.txt")
+		if err := writeGitHubOutput(path, report); err == nil {
+			t.Error("writeGitHubOutput returned nil, want the open failure reported so the caller can log it")
+		}
+	})
+}
+
 // TestPostCoverageComment reproduces issue #37: FindExistingComment returns
 // (0, err) on a transport failure, a 403, a 5xx, or a malformed body -- the
 // same zero ID it returns for "no comment exists yet". postCoverageComment
