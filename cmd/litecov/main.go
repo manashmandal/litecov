@@ -224,7 +224,7 @@ func main() {
 		}
 		fmt.Println("Coverage comment posted successfully")
 	} else {
-		fmt.Println("No PR number found, skipping comment")
+		fmt.Println(noPRNumberWarning(eventName))
 	}
 
 	if sha != "" {
@@ -443,6 +443,20 @@ func getPRNumber(eventPath, eventName string) (int, error) {
 	default:
 		return event.Number, nil
 	}
+}
+
+// noPRNumberWarning formats the line main prints when getPRNumber resolved
+// to 0, so there's no PR to comment on. It's a GitHub Actions ::warning::
+// workflow command instead of a plain fmt.Println, so it lands in the run's
+// Annotations panel rather than being one more line in a log nobody reads.
+// Before this, the message was silent twice over: the "litecov" commit
+// status only needs a SHA and posts regardless of whether a PR was found,
+// so the job still went green, and the log line read exactly like a normal
+// run finishing its work. That combination is how a workflow-trigger
+// regression that dropped every PR comment on this repo went three weeks
+// unnoticed (issue #82).
+func noPRNumberWarning(eventName string) string {
+	return fmt.Sprintf("::warning title=No Pull Request::No pull request found for this run (event: %s); litecov posts comments on pull_request events, see README for supported triggers", eventName)
 }
 
 // normalizeReportPaths rewrites every file path in files so coverage-tool

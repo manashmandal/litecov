@@ -402,6 +402,44 @@ func TestGetPRNumber(t *testing.T) {
 	})
 }
 
+// TestNoPRNumberWarning guards against the message regressing back to a
+// plain, easy-to-miss log line. Before issue #82's fix, main printed "No PR
+// number found, skipping comment" with fmt.Println -- indistinguishable
+// from any other status line and absent from the run's Annotations panel --
+// while the commit status still posted "success" on the same run. That
+// combination is how a push-triggered workflow with no PR to comment on
+// looked identical to a fully successful run for three weeks straight.
+func TestNoPRNumberWarning(t *testing.T) {
+	tests := []struct {
+		name      string
+		eventName string
+		want      string
+	}{
+		{
+			name:      "push event, from the issue's repro",
+			eventName: "push",
+			want:      "::warning title=No Pull Request::No pull request found for this run (event: push); litecov posts comments on pull_request events, see README for supported triggers",
+		},
+		{
+			name:      "empty event name from a direct binary invocation outside Actions",
+			eventName: "",
+			want:      "::warning title=No Pull Request::No pull request found for this run (event: ); litecov posts comments on pull_request events, see README for supported triggers",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := noPRNumberWarning(tt.eventName)
+			if got != tt.want {
+				t.Errorf("noPRNumberWarning(%q) = %q, want %q", tt.eventName, got, tt.want)
+			}
+			if !strings.HasPrefix(got, "::warning") {
+				t.Errorf("noPRNumberWarning(%q) = %q, want a GitHub Actions ::warning:: workflow command so it shows up in the run's Annotations panel, not a plain line", tt.eventName, got)
+			}
+		})
+	}
+}
+
 func TestLoadBaseReport_NoReport(t *testing.T) {
 	// An empty path is the only case where (nil, nil) is correct: no base
 	// comparison was requested at all. Every other way loadBaseReport can
