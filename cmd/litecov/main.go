@@ -216,15 +216,7 @@ func main() {
 	}
 
 	if prNumber > 0 {
-		existingID, _ := gh.FindExistingComment(prNumber, comment.Marker)
-		if existingID > 0 {
-			fmt.Printf("Updating existing comment (ID: %d)\n", existingID)
-			err = gh.UpdateComment(existingID, commentBody)
-		} else {
-			fmt.Println("Creating new comment")
-			err = gh.CreateComment(prNumber, commentBody)
-		}
-		if err != nil {
+		if err := postCoverageComment(gh, prNumber, comment.Marker, commentBody); err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to post comment: %v\n", err)
 			os.Exit(1)
 		}
@@ -280,6 +272,27 @@ func main() {
 		fmt.Fprintf(os.Stderr, "\nPatch coverage %.2f%% is below threshold %.2f%%\n", opts.PatchCoverage.Percentage(), *patchThreshold)
 		os.Exit(1)
 	}
+}
+
+// postCoverageComment creates a new PR comment, or updates the existing one
+// if a previous run already left one starting with marker.
+//
+// FindExistingComment returns (0, err) on a transport failure, a 403, a
+// 5xx, or a malformed body -- the same zero ID it returns for "no comment
+// exists yet". Falling through to CreateComment on that error used to turn
+// any transient lookup failure into a second, permanent coverage comment on
+// the PR (issue #37).
+func postCoverageComment(gh *github.Client, prNumber int, marker, body string) error {
+	existingID, err := gh.FindExistingComment(prNumber, marker)
+	if err != nil {
+		return fmt.Errorf("looking up existing comment: %w", err)
+	}
+	if existingID > 0 {
+		fmt.Printf("Updating existing comment (ID: %d)\n", existingID)
+		return gh.UpdateComment(existingID, body)
+	}
+	fmt.Println("Creating new comment")
+	return gh.CreateComment(prNumber, body)
 }
 
 // commitStatusForCoverage decides the state and description for the

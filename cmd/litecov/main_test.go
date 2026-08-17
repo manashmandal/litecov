@@ -1,12 +1,16 @@
 package main
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/manashmandal/litecov/internal/coverage"
+	"github.com/manashmandal/litecov/internal/github"
 	"github.com/manashmandal/litecov/internal/parser"
 )
 
@@ -419,5 +423,86 @@ func TestLoadBaseReport_SourcePrefixMatchesHead(t *testing.T) {
 	}
 	if fc.BaseCoverage != fc.HeadCoverage {
 		t.Errorf("BaseCoverage = %v, HeadCoverage = %v, want equal", fc.BaseCoverage, fc.HeadCoverage)
+	}
+}
+
+// TestPostCoverageComment reproduces issue #37: FindExistingComment returns
+// (0, err) on a transport failure, a 403, a 5xx, or a malformed body -- the
+// same zero ID it returns for "no comment exists yet". postCoverageComment
+// used to look only at the ID, so a lookup failure was indistinguishable
+// from "no comment exists" and fell through to CreateComment, permanently
+// duplicating the coverage comment on the PR.
+func TestPostCoverageComment(t *testing.T) {
+	const marker = "<!-- litecov -->"
+
+	tests := []struct {
+		name         string
+		listComments func(w http.ResponseWriter, r *http.Request)
+		wantErr      bool
+		wantCreate   int
+		wantUpdate   int
+	}{
+		{
+			name: "no existing comment creates one",
+			listComments: func(w http.ResponseWriter, r *http.Request) {
+				json.NewEncoder(w).Encode([]struct{}{})
+			},
+			wantCreate: 1,
+		},
+		{
+			name: "existing comment gets updated in place",
+			listComments: func(w http.ResponseWriter, r *http.Request) {
+				comments := []struct {
+					ID   int    `json:"id"`
+					Body string `json:"body"`
+				}{{ID: 42, Body: marker + "\nold report"}}
+				json.NewEncoder(w).Encode(comments)
+			},
+			wantUpdate: 1,
+		},
+		{
+			name: "lookup failure is reported instead of falling through to create",
+			listComments: func(w http.ResponseWriter, r *http.Request) {
+				// No rate-limit headers, so doRequest doesn't retry this (it
+				// reads as a plain permissions failure, not rate limiting).
+				w.WriteHeader(http.StatusForbidden)
+				w.Write([]byte("forbidden"))
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var createCalls, updateCalls int
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.Method {
+				case http.MethodGet:
+					tt.listComments(w, r)
+				case http.MethodPost:
+					createCalls++
+					w.WriteHeader(http.StatusCreated)
+					json.NewEncoder(w).Encode(map[string]int{"id": 99})
+				case http.MethodPatch:
+					updateCalls++
+					w.WriteHeader(http.StatusOK)
+					json.NewEncoder(w).Encode(map[string]int{"id": 42})
+				}
+			}))
+			defer server.Close()
+
+			gh := &github.Client{Token: "test-token", Owner: "owner", Repo: "repo", BaseURL: server.URL}
+			err := postCoverageComment(gh, 1, marker, "report body")
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("postCoverageComment() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if createCalls != tt.wantCreate {
+				t.Errorf("CreateComment called %d times, want %d", createCalls, tt.wantCreate)
+			}
+			if updateCalls != tt.wantUpdate {
+				t.Errorf("UpdateComment called %d times, want %d", updateCalls, tt.wantUpdate)
+			}
+		})
 	}
 }
