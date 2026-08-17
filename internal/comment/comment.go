@@ -2,6 +2,7 @@ package comment
 
 import (
 	"fmt"
+	"math"
 	"net/url"
 	"sort"
 	"strings"
@@ -158,13 +159,23 @@ func formatDeltaString(delta float64, hasBase bool) string {
 	if !hasBase {
 		return ""
 	}
-	if delta == 0 {
-		return ""
+	rounded := roundToDisplayPrecision(delta)
+	if rounded == 0 {
+		return " (ø)"
 	}
-	if delta > 0 {
-		return fmt.Sprintf(" (+%.2f%%)", delta)
+	if rounded > 0 {
+		return fmt.Sprintf(" (+%.2f%%)", rounded)
 	}
-	return fmt.Sprintf(" (%.2f%%)", delta)
+	return fmt.Sprintf(" (%.2f%%)", rounded)
+}
+
+// roundToDisplayPrecision rounds a percentage-point delta to the two decimal
+// places the comment actually renders it at. Comparing the raw delta to 0
+// let a change too small to show at that precision, like 0.004, print as a
+// signed +0.00% instead of the "no visible change" it actually is; rounding
+// before comparing makes the decision match what gets displayed (issue #38).
+func roundToDisplayPrecision(delta float64) float64 {
+	return math.Round(delta*100) / 100
 }
 
 func formatCoverageDiff(report *coverage.Report) string {
@@ -210,15 +221,22 @@ func formatCoverageDiffWithComparison(comp *coverage.Comparison, opts Options) s
 	// avoids presenting comp.Base.Coverage's 0 fallback as a real
 	// measurement (issue #32).
 	if comp.Base != nil && !comp.NoBaseFiles {
-		coverageDiff := comp.Head.Coverage - comp.Base.Coverage
+		// Rounded to display precision before comparing, same as
+		// formatDeltaString: a raw delta of e.g. 0.004 is 0.00% once printed,
+		// so it gets ø and a blank prefix instead of a misleading +0.00%
+		// (issue #38).
+		coverageDiff := roundToDisplayPrecision(comp.Head.Coverage - comp.Base.Coverage)
 		prefix := " "
+		deltaStr := "ø"
 		if coverageDiff > 0 {
 			prefix = "+"
+			deltaStr = fmt.Sprintf("+%.2f%%", coverageDiff)
 		} else if coverageDiff < 0 {
 			prefix = "-"
+			deltaStr = fmt.Sprintf("%.2f%%", coverageDiff)
 		}
-		sb.WriteString(fmt.Sprintf("%s Coverage     %6.2f%%   %6.2f%%   %+.2f%%\n",
-			prefix, comp.Base.Coverage, comp.Head.Coverage, coverageDiff))
+		sb.WriteString(fmt.Sprintf("%s Coverage     %6.2f%%   %6.2f%%   %s\n",
+			prefix, comp.Base.Coverage, comp.Head.Coverage, deltaStr))
 	} else {
 		sb.WriteString(fmt.Sprintf("  Coverage              %6.2f%%\n", comp.Head.Coverage))
 	}
@@ -227,12 +245,12 @@ func formatCoverageDiffWithComparison(comp *coverage.Comparison, opts Options) s
 
 	if comp.Base != nil && !comp.NoBaseFiles {
 		filesDiff := len(comp.Head.Files) - len(comp.Base.Files)
-		sb.WriteString(fmt.Sprintf("  Files           %4d      %4d   %+5d\n",
-			len(comp.Base.Files), len(comp.Head.Files), filesDiff))
+		sb.WriteString(fmt.Sprintf("  Files           %4d      %4d   %5s\n",
+			len(comp.Base.Files), len(comp.Head.Files), formatIntDelta(filesDiff)))
 
 		linesDiff := comp.Head.TotalLines - comp.Base.TotalLines
-		sb.WriteString(fmt.Sprintf("  Lines          %5d     %5d   %+5d\n",
-			comp.Base.TotalLines, comp.Head.TotalLines, linesDiff))
+		sb.WriteString(fmt.Sprintf("  Lines          %5d     %5d   %5s\n",
+			comp.Base.TotalLines, comp.Head.TotalLines, formatIntDelta(linesDiff)))
 	} else {
 		sb.WriteString(fmt.Sprintf("  Files                     %4d\n", len(comp.Head.Files)))
 		sb.WriteString(fmt.Sprintf("  Lines                    %5d\n", comp.Head.TotalLines))
@@ -248,8 +266,8 @@ func formatCoverageDiffWithComparison(comp *coverage.Comparison, opts Options) s
 		} else if hitsDiff < 0 {
 			hitsPrefix = "-"
 		}
-		sb.WriteString(fmt.Sprintf("%s Hits          %5d     %5d   %+5d\n",
-			hitsPrefix, comp.Base.Hits(), comp.Head.Hits(), hitsDiff))
+		sb.WriteString(fmt.Sprintf("%s Hits          %5d     %5d   %5s\n",
+			hitsPrefix, comp.Base.Hits(), comp.Head.Hits(), formatIntDelta(hitsDiff)))
 
 		missesDiff := comp.Head.Misses() - comp.Base.Misses()
 		missesPrefix := " "
@@ -258,8 +276,8 @@ func formatCoverageDiffWithComparison(comp *coverage.Comparison, opts Options) s
 		} else if missesDiff > 0 {
 			missesPrefix = "-"
 		}
-		sb.WriteString(fmt.Sprintf("%s Misses        %5d     %5d   %+5d\n",
-			missesPrefix, comp.Base.Misses(), comp.Head.Misses(), missesDiff))
+		sb.WriteString(fmt.Sprintf("%s Misses        %5d     %5d   %5s\n",
+			missesPrefix, comp.Base.Misses(), comp.Head.Misses(), formatIntDelta(missesDiff)))
 	} else {
 		sb.WriteString(fmt.Sprintf("  Hits                     %5d\n", comp.Head.Hits()))
 		sb.WriteString(fmt.Sprintf("  Misses                   %5d\n", comp.Head.Misses()))
@@ -269,6 +287,17 @@ func formatCoverageDiffWithComparison(comp *coverage.Comparison, opts Options) s
 	sb.WriteString("</details>\n\n")
 
 	return sb.String()
+}
+
+// formatIntDelta renders an exact integer delta (Files, Lines, Hits, Misses
+// counts, which have no display-precision rounding to worry about) with a
+// leading sign, except at 0: printing "+0" for a row that didn't change
+// reads as a change that happened (issue #38).
+func formatIntDelta(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	return fmt.Sprintf("%+d", n)
 }
 
 func formatImpactedFiles(files []coverage.FileCoverage, opts Options) string {
@@ -398,13 +427,17 @@ func formatFileDelta(fc coverage.FileChange) string {
 		// (issue #32).
 		return "`unknown`"
 	}
-	if fc.Delta == 0 {
+	// Rounded to display precision before comparing, same as
+	// formatDeltaString: a raw delta of e.g. 0.004 is 0.00% once printed, so
+	// it gets ø instead of a misleading +0.00% (issue #38).
+	rounded := roundToDisplayPrecision(fc.Delta)
+	if rounded == 0 {
 		return "`ø`"
 	}
-	if fc.Delta > 0 {
-		return fmt.Sprintf("`+%.2f%%`", fc.Delta)
+	if rounded > 0 {
+		return fmt.Sprintf("`+%.2f%%`", rounded)
 	}
-	return fmt.Sprintf("`%.2f%%`", fc.Delta)
+	return fmt.Sprintf("`%.2f%%`", rounded)
 }
 
 // formatFileName renders a coverage report path as an inline code span,

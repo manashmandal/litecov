@@ -1095,6 +1095,8 @@ func TestFormatQuickSummaryWithDelta(t *testing.T) {
 			contains: []string{"75.00%", "(-5.00%)"},
 		},
 		{
+			// issue #38: an exactly-zero delta must show ø, not disappear
+			// from the header.
 			name: "zero delta",
 			comp: &coverage.Comparison{
 				Head: &coverage.Report{
@@ -1108,8 +1110,28 @@ func TestFormatQuickSummaryWithDelta(t *testing.T) {
 				},
 				CoverageDelta: 0,
 			},
-			contains: []string{"80.00%"},
+			contains: []string{"80.00%", "(ø)"},
 			excludes: []string{"(+", "(-"},
+		},
+		{
+			// issue #38 repro: base 91230/100000, head 91234/100000. The raw
+			// delta of 0.004 rounds to 0.00 at display precision and must
+			// render as ø, not "(+0.00%)".
+			name: "sub-precision delta rounds to ø",
+			comp: &coverage.Comparison{
+				Head: &coverage.Report{
+					TotalCovered: 91234,
+					TotalLines:   100000,
+					Coverage:     91.234,
+					Files:        make([]coverage.FileCoverage, 1),
+				},
+				Base: &coverage.Report{
+					Coverage: 91.23,
+				},
+				CoverageDelta: 0.004,
+			},
+			contains: []string{"91.23%", "(ø)"},
+			excludes: []string{"(+", "(-", "+0.00%"},
 		},
 		{
 			name: "no base",
@@ -1256,6 +1278,78 @@ func TestFormatCoverageDiffWithComparison(t *testing.T) {
 		}
 		if strings.Contains(result, "+85.00%") {
 			t.Error("should not render the empty base as a real 0% measurement")
+		}
+	})
+
+	t.Run("sub-precision coverage delta renders as ø", func(t *testing.T) {
+		// issue #38 repro: base 91230/100000 (91.23%), head 91234/100000
+		// (91.234%). The raw delta is 0.004, which rounds to 0.00 at the two
+		// decimals actually displayed, so the Coverage row must render ø
+		// with a blank prefix, not "+0.00%". Files and Lines are unchanged
+		// too, so their delta column must read plain 0, not +0.
+		comp := &coverage.Comparison{
+			Head: &coverage.Report{
+				TotalCovered: 91234,
+				TotalLines:   100000,
+				Coverage:     91.234,
+				Files:        make([]coverage.FileCoverage, 1),
+			},
+			Base: &coverage.Report{
+				TotalCovered: 91230,
+				TotalLines:   100000,
+				Coverage:     91.23,
+				Files:        make([]coverage.FileCoverage, 1),
+			},
+		}
+
+		result := formatCoverageDiffWithComparison(comp, Options{})
+
+		if strings.Contains(result, "+0.00%") {
+			t.Error("a sub-precision coverage delta should not render as +0.00%")
+		}
+		if !strings.Contains(result, "ø") {
+			t.Error("a sub-precision coverage delta should render as ø")
+		}
+		if strings.Contains(result, "+ Coverage") {
+			t.Error("a sub-precision coverage delta should not get a + diff prefix")
+		}
+		if strings.Contains(result, "+0") {
+			t.Error("unchanged Files/Lines counts should not render with a + sign")
+		}
+		if !strings.Contains(result, "+4") || !strings.Contains(result, "-4") {
+			t.Error("a real Hits/Misses change should still render with its sign")
+		}
+	})
+
+	t.Run("identical head and base render ø and 0, not +0.00% or +0", func(t *testing.T) {
+		// issue #38: an exactly-zero delta must not force a + sign either --
+		// %+.2f%% and %+d print "+0.00%"/"+0" for a real 0 just as readily
+		// as for a sub-precision one.
+		comp := &coverage.Comparison{
+			Head: &coverage.Report{
+				TotalCovered: 100,
+				TotalLines:   100,
+				Coverage:     100.0,
+				Files:        make([]coverage.FileCoverage, 3),
+			},
+			Base: &coverage.Report{
+				TotalCovered: 100,
+				TotalLines:   100,
+				Coverage:     100.0,
+				Files:        make([]coverage.FileCoverage, 3),
+			},
+		}
+
+		result := formatCoverageDiffWithComparison(comp, Options{})
+
+		if strings.Contains(result, "+0") {
+			t.Error("an unchanged report should not render any +0 delta")
+		}
+		if strings.Contains(result, "+0.00%") {
+			t.Error("an exactly-zero coverage delta should not render as +0.00%")
+		}
+		if !strings.Contains(result, "ø") {
+			t.Error("an exactly-zero coverage delta should render as ø")
 		}
 	})
 }
@@ -1453,6 +1547,19 @@ func TestFormatFileDelta(t *testing.T) {
 			fc:       coverage.FileChange{IsNew: false, NoBaseData: true, Delta: 0},
 			expected: "`unknown`",
 		},
+		{
+			// issue #38: a delta that rounds to 0.00% at display precision
+			// must render as ø, not "+0.00%" -- a change that small isn't
+			// visible at two decimals and shouldn't be printed as one.
+			name:     "sub-precision positive delta rounds to ø",
+			fc:       coverage.FileChange{IsNew: false, Delta: 0.004},
+			expected: "`ø`",
+		},
+		{
+			name:     "sub-precision negative delta rounds to ø",
+			fc:       coverage.FileChange{IsNew: false, Delta: -0.004},
+			expected: "`ø`",
+		},
 	}
 
 	for _, tt := range tests {
@@ -1479,10 +1586,12 @@ func TestFormatDeltaString(t *testing.T) {
 			expected: "",
 		},
 		{
+			// issue #38: an exactly-zero delta must say so with ø, not drop
+			// out of the header as if no base had been configured at all.
 			name:     "zero delta with base",
 			delta:    0,
 			hasBase:  true,
-			expected: "",
+			expected: " (ø)",
 		},
 		{
 			name:     "positive delta",
@@ -1495,6 +1604,22 @@ func TestFormatDeltaString(t *testing.T) {
 			delta:    -1.75,
 			hasBase:  true,
 			expected: " (-1.75%)",
+		},
+		{
+			// issue #38 repro: a raw delta of 0.004 rounds to 0.00 at the
+			// two decimals actually displayed, so it must render as ø
+			// instead of the misleading "(+0.00%)" the unrounded comparison
+			// produced.
+			name:     "sub-precision positive delta rounds to ø",
+			delta:    0.004,
+			hasBase:  true,
+			expected: " (ø)",
+		},
+		{
+			name:     "sub-precision negative delta rounds to ø",
+			delta:    -0.004,
+			hasBase:  true,
+			expected: " (ø)",
 		},
 	}
 
