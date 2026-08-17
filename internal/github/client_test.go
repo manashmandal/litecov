@@ -370,29 +370,65 @@ func TestClient_CreateComment(t *testing.T) {
 	}
 }
 
+// TestClient_SetCommitStatus covers issue #48: SetCommitStatus never sent
+// target_url, so the check row on a PR had no "Details" link to get from a
+// failing check to the report or the job log. targetURL == "" (no
+// GITHUB_RUN_ID to build one from, e.g. a direct binary invocation outside
+// Actions) must omit the key rather than send GitHub an empty string.
 func TestClient_SetCommitStatus(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "POST" {
-			t.Errorf("expected POST, got %s", r.Method)
-		}
-		if r.URL.Path != "/repos/owner/repo/statuses/abc123" {
-			t.Errorf("unexpected path: %s", r.URL.Path)
-		}
-		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(map[string]string{"state": "success"})
-	}))
-	defer server.Close()
-
-	client := &Client{
-		Token:   "test-token",
-		Owner:   "owner",
-		Repo:    "repo",
-		BaseURL: server.URL,
+	tests := []struct {
+		name       string
+		targetURL  string
+		wantHasKey bool
+	}{
+		{
+			name:       "no target URL omits the key",
+			targetURL:  "",
+			wantHasKey: false,
+		},
+		{
+			name:       "target URL is sent as-is",
+			targetURL:  "https://github.com/owner/repo/actions/runs/123",
+			wantHasKey: true,
+		},
 	}
 
-	err := client.SetCommitStatus("abc123", "success", "85% coverage", "litecov")
-	if err != nil {
-		t.Fatalf("SetCommitStatus() error = %v", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var body map[string]any
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != "POST" {
+					t.Errorf("expected POST, got %s", r.Method)
+				}
+				if r.URL.Path != "/repos/owner/repo/statuses/abc123" {
+					t.Errorf("unexpected path: %s", r.URL.Path)
+				}
+				json.NewDecoder(r.Body).Decode(&body)
+				w.WriteHeader(http.StatusCreated)
+				json.NewEncoder(w).Encode(map[string]string{"state": "success"})
+			}))
+			defer server.Close()
+
+			client := &Client{
+				Token:   "test-token",
+				Owner:   "owner",
+				Repo:    "repo",
+				BaseURL: server.URL,
+			}
+
+			err := client.SetCommitStatus("abc123", "success", "85% coverage", "litecov", tt.targetURL)
+			if err != nil {
+				t.Fatalf("SetCommitStatus() error = %v", err)
+			}
+
+			got, hasKey := body["target_url"]
+			if hasKey != tt.wantHasKey {
+				t.Errorf("target_url present = %v, want %v (body: %v)", hasKey, tt.wantHasKey, body)
+			}
+			if hasKey && got != tt.targetURL {
+				t.Errorf("target_url = %v, want %v", got, tt.targetURL)
+			}
+		})
 	}
 }
 
@@ -520,7 +556,7 @@ func TestClient_SetCommitStatus_Error(t *testing.T) {
 	defer server.Close()
 
 	client := &Client{Token: "test", Owner: "o", Repo: "r", BaseURL: server.URL}
-	err := client.SetCommitStatus("sha", "success", "desc", "ctx")
+	err := client.SetCommitStatus("sha", "success", "desc", "ctx", "")
 	if err == nil {
 		t.Error("expected error for 500 response")
 	}

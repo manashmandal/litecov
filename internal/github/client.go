@@ -335,13 +335,22 @@ func (c *Client) UpdateComment(commentID int, body string) error {
 	return nil
 }
 
-func (c *Client) SetCommitStatus(sha, state, description, context string) error {
+// SetCommitStatus posts a commit status. targetURL becomes the check row's
+// "Details" link on the PR; GitHub's API documents it as "string or null"
+// (https://docs.github.com/en/rest/commits/statuses), so an empty targetURL
+// omits the key entirely rather than send the empty string GitHub might not
+// treat the same way (issue #48).
+func (c *Client) SetCommitStatus(sha, state, description, context, targetURL string) error {
 	path := fmt.Sprintf("/repos/%s/%s/statuses/%s", c.Owner, c.Repo, sha)
-	payload, _ := json.Marshal(map[string]string{
+	fields := map[string]string{
 		"state":       state,
 		"description": description,
 		"context":     context,
-	})
+	}
+	if targetURL != "" {
+		fields["target_url"] = targetURL
+	}
+	payload, _ := json.Marshal(fields)
 
 	resp, err := c.doRequest("POST", path, payload)
 	if err != nil {

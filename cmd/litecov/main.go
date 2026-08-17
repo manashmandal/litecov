@@ -52,11 +52,17 @@ func main() {
 	eventPath := os.Getenv("GITHUB_EVENT_PATH")
 	eventName := os.Getenv("GITHUB_EVENT_NAME")
 	sha := os.Getenv("GITHUB_SHA")
+	runID := os.Getenv("GITHUB_RUN_ID")
 	// GITHUB_API_URL and GITHUB_SERVER_URL are "https://api.github.com" and
 	// "https://github.com" on github.com runners, but point at the
 	// enterprise host instead on GitHub Enterprise Server (issue #49).
 	apiBaseURL := resolveGitHubHost(os.Getenv("GITHUB_API_URL"), "https://api.github.com")
 	serverURL := resolveGitHubHost(os.Getenv("GITHUB_SERVER_URL"), "https://github.com")
+	// The commit statuses' target_url, the check row's "Details" link.
+	// Built from serverURL (already GHES-correct) and repository rather than
+	// raw env reads, so a check on GitHub Enterprise Server links back to the
+	// enterprise host instead of github.com (issue #48).
+	targetURL := commitStatusTargetURL(serverURL, repository, runID)
 
 	if token == "" {
 		fmt.Fprintln(os.Stderr, "GITHUB_TOKEN is required")
@@ -239,7 +245,7 @@ func main() {
 
 	if sha != "" {
 		state, description := commitStatusForCoverage(report.Coverage, *threshold)
-		if err := gh.SetCommitStatus(sha, state, description, "litecov"); err != nil {
+		if err := gh.SetCommitStatus(sha, state, description, "litecov", targetURL); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: Failed to set commit status: %v\n", err)
 		} else {
 			fmt.Printf("Commit status set: %s - %s\n", state, description)
@@ -251,7 +257,7 @@ func main() {
 		// covered repo, so litecov alone could never catch that; this status
 		// is scoped to just the lines the PR added.
 		patchState, patchDescription := commitStatusForPatchCoverage(opts.PatchCoverage, *patchThreshold)
-		if err := gh.SetCommitStatus(sha, patchState, patchDescription, "litecov/patch"); err != nil {
+		if err := gh.SetCommitStatus(sha, patchState, patchDescription, "litecov/patch", targetURL); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: Failed to set patch commit status: %v\n", err)
 		} else {
 			fmt.Printf("Patch commit status set: %s - %s\n", patchState, patchDescription)
@@ -340,6 +346,25 @@ func commitStatusForPatchCoverage(patch coverage.PatchCoverage, threshold float6
 		return "failure", fmt.Sprintf("%.2f%% patch coverage (minimum: %.2f%%)", pct, threshold)
 	}
 	return "success", fmt.Sprintf("%.2f%% patch coverage", pct)
+}
+
+// commitStatusTargetURL builds the target_url shared by both commit
+// statuses: the link GitHub shows as the check row's "Details" button.
+// Before this, SetCommitStatus never set target_url at all, so the check
+// showed a description like "73.12% coverage (minimum: 80.00%)" and
+// dead-ended there, with no way to get from a failing check to the report,
+// the comment, or the job log (issue #48). It points at the Actions run
+// rather than the PR comment because the "litecov" status is set whenever
+// sha is non-empty, regardless of whether a PR (and so a comment) exists.
+// runID is GITHUB_RUN_ID, which GitHub Actions sets on every run; it's only
+// empty on a direct binary invocation outside Actions, the one case this
+// returns "" for -- SetCommitStatus treats "" as "omit target_url" rather
+// than send GitHub a broken link.
+func commitStatusTargetURL(serverURL, repository, runID string) string {
+	if runID == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s/%s/actions/runs/%s", serverURL, repository, runID)
 }
 
 // resolveThreshold decides the value for a good-threshold/warn-threshold

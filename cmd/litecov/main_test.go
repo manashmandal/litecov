@@ -255,6 +255,50 @@ func TestResolveThreshold(t *testing.T) {
 	}
 }
 
+// TestCommitStatusTargetURL guards issue #48: SetCommitStatus never sent
+// target_url, so the check row on a PR had no "Details" link back to the
+// run that produced it.
+func TestCommitStatusTargetURL(t *testing.T) {
+	tests := []struct {
+		name       string
+		serverURL  string
+		repository string
+		runID      string
+		want       string
+	}{
+		{
+			name:       "no run ID means no Actions run to link to",
+			serverURL:  "https://github.com",
+			repository: "owner/repo",
+			runID:      "",
+			want:       "",
+		},
+		{
+			name:       "github.com run",
+			serverURL:  "https://github.com",
+			repository: "owner/repo",
+			runID:      "123456789",
+			want:       "https://github.com/owner/repo/actions/runs/123456789",
+		},
+		{
+			name:       "GitHub Enterprise Server run links back to the enterprise host",
+			serverURL:  "https://ghe.example.com",
+			repository: "owner/repo",
+			runID:      "42",
+			want:       "https://ghe.example.com/owner/repo/actions/runs/42",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := commitStatusTargetURL(tt.serverURL, tt.repository, tt.runID)
+			if got != tt.want {
+				t.Errorf("commitStatusTargetURL(%q, %q, %q) = %q, want %q", tt.serverURL, tt.repository, tt.runID, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestResolveGitHubHost guards issue #49: litecov hardcoded api.github.com
 // and github.com, so it could not run on GitHub Enterprise Server, where
 // GITHUB_API_URL and GITHUB_SERVER_URL point at the enterprise host instead.
