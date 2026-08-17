@@ -636,6 +636,42 @@ func sortImpactedFiles(files []coverage.FileCoverage) []coverage.FileCoverage {
 	return sorted
 }
 
+// githubCommentBodyLimit is GitHub's hard cap on an issue/PR comment body:
+// posting anything longer gets HTTP 422 "body is too long (maximum is 65536
+// characters)" back from the API, which internal/github.Client turns into an
+// error that main.go treats as fatal -- the whole action fails and no
+// comment gets posted at all (issue #22).
+const githubCommentBodyLimit = 65536
+
+// impactedFilesByteBudget bounds how much of githubCommentBodyLimit the
+// Impacted Files table -- one row per file, up to five hyperlinks each,
+// roughly 900 bytes a row once RepoURL and SHA are both set -- is allowed to
+// spend building formatImpactedFiles/formatImpactedFilesWithDelta's own
+// strings.Builder. Everything else the comment renders (header, summary
+// lines, the Coverage Diff block, the footer) stays a small, fixed size no
+// matter how many files the report covers, so reserving a flat margin here
+// for that fixed part is enough to keep the whole assembled body under
+// githubCommentBodyLimit without either function needing to know how much
+// of the budget Format/FormatWithComparison's other sections will spend
+// (issue #22).
+const impactedFilesByteBudget = githubCommentBodyLimit - 8192
+
+// formatMoreFilesRow renders the Impacted Files table's overflow row: a
+// single cell saying how many files the byte-budget cap left out, with the
+// rest of the row's cells left empty so the table still has the same column
+// count as every row above it. Codecov's own comment does the same thing
+// once a report has more impacted files than it renders inline, e.g.
+// spulec/moto#4200's "... and 1 more" (issue #22).
+func formatMoreFilesRow(hidden, columns int) string {
+	unit := "files"
+	if hidden == 1 {
+		unit = "file"
+	}
+	cells := make([]string, columns)
+	cells[0] = fmt.Sprintf("_... and %d more %s not shown (comment size limit)_", hidden, unit)
+	return "| " + strings.Join(cells, " | ") + " |\n"
+}
+
 func formatImpactedFiles(files []coverage.FileCoverage, opts Options) string {
 	if len(files) == 0 {
 		if opts.ShowFiles == "changed" {
@@ -655,7 +691,7 @@ func formatImpactedFiles(files []coverage.FileCoverage, opts Options) string {
 	sb.WriteString("| File | Coverage | Uncovered Lines | Status |\n")
 	sb.WriteString("|------|----------|-----------------|--------|\n")
 
-	for _, f := range files {
+	for i, f := range files {
 		pct := f.Percentage()
 		uncovered := f.UncoveredLines
 		// A file with patch data reports the coverage of only the lines
@@ -680,7 +716,15 @@ func formatImpactedFiles(files []coverage.FileCoverage, opts Options) string {
 			uncoveredStr = "-"
 			emoji = "❌"
 		}
-		sb.WriteString(fmt.Sprintf("| %s | %s | %s | %s |\n", fileName, coverageStr, uncoveredStr, emoji))
+		row := fmt.Sprintf("| %s | %s | %s | %s |\n", fileName, coverageStr, uncoveredStr, emoji)
+		// Stop before a row would push the table past its byte budget,
+		// rather than finding out from GitHub's 422 that the whole comment
+		// was too big to post (issue #22).
+		if sb.Len()+len(row) > impactedFilesByteBudget {
+			sb.WriteString(formatMoreFilesRow(len(files)-i, 4))
+			break
+		}
+		sb.WriteString(row)
 	}
 
 	sb.WriteString("\n")
@@ -739,7 +783,7 @@ func formatImpactedFilesWithDelta(fileChanges []coverage.FileChange, opts Option
 	sb.WriteString("| File | Coverage | \u0394 | Uncovered Lines | Status |\n")
 	sb.WriteString("|------|----------|---|-----------------|--------|\n")
 
-	for _, fc := range fileChanges {
+	for i, fc := range fileChanges {
 		fileName := formatFileName(fc.Path, opts)
 		deltaStr := formatFileDelta(fc)
 		coverageStr := fmt.Sprintf("`%.2f%%`", fc.HeadCoverage)
@@ -788,7 +832,14 @@ func formatImpactedFilesWithDelta(fileChanges []coverage.FileChange, opts Option
 			emoji = "🗑️"
 			uncoveredStr = "-"
 		}
-		sb.WriteString(fmt.Sprintf("| %s | %s | %s | %s | %s |\n", fileName, coverageStr, deltaStr, uncoveredStr, emoji))
+		row := fmt.Sprintf("| %s | %s | %s | %s | %s |\n", fileName, coverageStr, deltaStr, uncoveredStr, emoji)
+		// Same byte-budget cap as formatImpactedFiles, applied to the
+		// comparison table's rows (issue #22).
+		if sb.Len()+len(row) > impactedFilesByteBudget {
+			sb.WriteString(formatMoreFilesRow(len(fileChanges)-i, 5))
+			break
+		}
+		sb.WriteString(row)
 	}
 
 	sb.WriteString("\n")

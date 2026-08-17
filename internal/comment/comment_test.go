@@ -1,6 +1,7 @@
 package comment
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -1312,6 +1313,47 @@ func TestFormatImpactedFiles_DoesNotMutateInput(t *testing.T) {
 	}
 }
 
+// TestFormatImpactedFiles_CapsToByteBudget reproduces issue #22: nothing
+// capped the Impacted Files table, so a report with enough files and
+// hyperlinks rendered a body GitHub's API rejects outright (HTTP 422, "body
+// is too long, maximum is 65536 characters"). 300 files with RepoURL and SHA
+// set, matching the issue's own repro, must stay within
+// impactedFilesByteBudget and note how many rows the cap left out instead of
+// silently producing an oversized table.
+func TestFormatImpactedFiles_CapsToByteBudget(t *testing.T) {
+	var files []coverage.FileCoverage
+	for i := 0; i < 300; i++ {
+		files = append(files, coverage.FileCoverage{
+			Path:           fmt.Sprintf("internal/pkg%03d/very_long_descriptive_filename_number_%03d.go", i, i),
+			LinesCovered:   95,
+			LinesTotal:     100,
+			UncoveredLines: []int{1, 3, 5, 7, 9}, // 5 separate ranges, so every row carries 5 line hyperlinks
+		})
+	}
+	opts := Options{
+		RepoURL: "https://github.com/manashmandal/litecov",
+		SHA:     strings.Repeat("a1b2c3d4e5", 4), // 40 characters, like a real commit SHA
+	}
+
+	result := formatImpactedFiles(files, opts)
+
+	if len(result) > impactedFilesByteBudget {
+		t.Errorf("table is %d bytes, over its %d-byte budget", len(result), impactedFilesByteBudget)
+	}
+	if !strings.Contains(result, "**Impacted Files (300)**") {
+		t.Error("header should still report the true total, not just the shown count")
+	}
+	if !strings.Contains(result, "pkg000") {
+		t.Error("the first sorted file should still render before the cap kicks in")
+	}
+	if strings.Contains(result, "pkg299") {
+		t.Error("expected the cap to leave the last file out, but it rendered anyway")
+	}
+	if !strings.Contains(result, "more files not shown") {
+		t.Errorf("expected an overflow row noting the files the cap left out, got: %s", result)
+	}
+}
+
 // TestFormat_MissingFilesSortIntoPlace covers the closing complaint in issue
 // #56: files findMissingFiles appends for show-files: changed used to always
 // land at the end of the table, after Format appended them, since nothing
@@ -1339,6 +1381,39 @@ func TestFormat_MissingFilesSortIntoPlace(t *testing.T) {
 	}
 	if newIdx > testedIdx {
 		t.Error("the untested file findMissingFiles appended must sort ahead of the well-covered file, not trail behind it")
+	}
+}
+
+// TestFormat_StaysUnderGitHubBodyLimit reproduces issue #22's own repro: a
+// 300-file report rendered through the full Format pipeline with RepoURL and
+// SHA set used to come out around 297KB, 4.5x over the 65536-character limit
+// GitHub enforces on a comment body. CreateComment/UpdateComment would get
+// back an HTTP 422 for that, and main.go treats the failure as fatal, so the
+// whole action failed and no comment was posted at all. The assembled body
+// must stay at or under githubCommentBodyLimit regardless of how many files
+// the report covers.
+func TestFormat_StaysUnderGitHubBodyLimit(t *testing.T) {
+	report := &coverage.Report{}
+	for i := 0; i < 300; i++ {
+		report.Files = append(report.Files, coverage.FileCoverage{
+			Path:           fmt.Sprintf("internal/pkg%03d/very_long_descriptive_filename_number_%03d.go", i, i),
+			LinesCovered:   95,
+			LinesTotal:     100,
+			UncoveredLines: []int{1, 3, 5, 7, 9},
+		})
+	}
+	report.Calculate()
+
+	opts := Options{
+		ShowFiles: "all",
+		RepoURL:   "https://github.com/manashmandal/litecov",
+		SHA:       strings.Repeat("a1b2c3d4e5", 4),
+	}
+
+	result := Format(report, opts)
+
+	if len(result) > githubCommentBodyLimit {
+		t.Errorf("body is %d bytes, over GitHub's %d-character comment limit", len(result), githubCommentBodyLimit)
 	}
 }
 
@@ -2754,6 +2829,42 @@ func TestFormatImpactedFilesWithDelta_DoesNotMutateInput(t *testing.T) {
 			t.Errorf("formatImpactedFilesWithDelta mutated its input order: got %v, want %v", fileChanges, original)
 			break
 		}
+	}
+}
+
+// TestFormatImpactedFilesWithDelta_CapsToByteBudget is
+// TestFormatImpactedFiles_CapsToByteBudget's comparison-path counterpart
+// (issue #22): the byte-budget cap applies here too, since a base-coverage
+// comparison run hits the same GitHub 65536-character body limit.
+func TestFormatImpactedFilesWithDelta_CapsToByteBudget(t *testing.T) {
+	var fileChanges []coverage.FileChange
+	for i := 0; i < 300; i++ {
+		fileChanges = append(fileChanges, coverage.FileChange{
+			Path:           fmt.Sprintf("internal/pkg%03d/very_long_descriptive_filename_number_%03d.go", i, i),
+			HeadCoverage:   95,
+			BaseCoverage:   95,
+			Delta:          0,
+			UncoveredLines: []int{1, 3, 5, 7, 9},
+		})
+	}
+	opts := Options{
+		RepoURL: "https://github.com/manashmandal/litecov",
+		SHA:     strings.Repeat("a1b2c3d4e5", 4),
+	}
+
+	result := formatImpactedFilesWithDelta(fileChanges, opts)
+
+	if len(result) > impactedFilesByteBudget {
+		t.Errorf("table is %d bytes, over its %d-byte budget", len(result), impactedFilesByteBudget)
+	}
+	if !strings.Contains(result, "**Impacted Files (300)**") {
+		t.Error("header should still report the true total, not just the shown count")
+	}
+	if strings.Contains(result, "pkg299") {
+		t.Error("expected the cap to leave the last file out, but it rendered anyway")
+	}
+	if !strings.Contains(result, "more files not shown") {
+		t.Errorf("expected an overflow row noting the files the cap left out, got: %s", result)
 	}
 }
 
