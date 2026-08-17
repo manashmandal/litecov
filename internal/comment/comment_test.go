@@ -1459,6 +1459,53 @@ func TestFormatFooter(t *testing.T) {
 	}
 }
 
+// TestFormatFooter_Legend guards issue #79: the footer used to print the
+// ø, new and status glyphs without defining any of them anywhere in the
+// comment. Each case checks one piece of that definition actually landed,
+// not just that some new text showed up.
+func TestFormatFooter_Legend(t *testing.T) {
+	result := formatFooter()
+
+	tests := []struct {
+		name string
+		want string
+	}{
+		{"legend heading", "**Legend**"},
+		{"defines ø", "ø = not affected"},
+		{"defines new", "new = file not in the base report"},
+		{"defines the uncovered-lines dash", "- = no uncovered lines"},
+		{"states the pass cutoff", "✅ ≥ 80%"},
+		{"states the warn cutoff", "⚠️ ≥ 50%"},
+		{"states the fail cutoff", "❌ < 50%"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if !strings.Contains(result, tt.want) {
+				t.Errorf("formatFooter() missing %q, got:\n%s", tt.want, result)
+			}
+		})
+	}
+}
+
+// TestFormatFooter_CutoffsMatchGetStatusEmoji ties the footer legend's
+// stated thresholds to what getStatusEmoji actually does at those exact
+// values, so the two can't silently drift apart (issue #79).
+func TestFormatFooter_CutoffsMatchGetStatusEmoji(t *testing.T) {
+	if got := getStatusEmoji(highCoverageThreshold); got != "✅" {
+		t.Errorf("getStatusEmoji(highCoverageThreshold) = %s, want ✅", got)
+	}
+	if got := getStatusEmoji(highCoverageThreshold - 0.01); got == "✅" {
+		t.Errorf("getStatusEmoji(highCoverageThreshold - 0.01) = %s, want something other than ✅", got)
+	}
+	if got := getStatusEmoji(mediumCoverageThreshold); got != "⚠️" {
+		t.Errorf("getStatusEmoji(mediumCoverageThreshold) = %s, want ⚠️", got)
+	}
+	if got := getStatusEmoji(mediumCoverageThreshold - 0.01); got != "❌" {
+		t.Errorf("getStatusEmoji(mediumCoverageThreshold - 0.01) = %s, want ❌", got)
+	}
+}
+
 func TestFormatWithComparison(t *testing.T) {
 	head := &coverage.Report{
 		Files: []coverage.FileCoverage{
