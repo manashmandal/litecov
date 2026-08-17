@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -200,7 +201,7 @@ func main() {
 		if *showFiles != "changed" {
 			annotationFiles = nil // nil means show all files
 		}
-		outputAnnotations(report, annotationFiles)
+		outputAnnotations(report, annotationFiles, patchedLines, prNumber > 0)
 	}
 
 	repoURL := fmt.Sprintf("%s/%s", serverURL, repository)
@@ -679,7 +680,55 @@ func detectCoverageFile() string {
 	return ""
 }
 
-func outputAnnotations(report *coverage.Report, changedFiles []string) {
+// annotationCap is how many ::warning lines outputAnnotations will print.
+// GitHub's Actions toolkit caps each step at 10 warning annotations (and 10
+// notice annotations, counted separately), and silently drops anything past
+// that with no sign in the run's UI or its log
+// (https://github.com/actions/toolkit/blob/main/docs/problem-matchers.md).
+// Left uncapped, a repo with any real amount of uncovered code emitted
+// hundreds of these, and which ten GitHub actually rendered depended on
+// report.Files' parse order rather than anything about the PR (issue #46).
+const annotationCap = 10
+
+// Priority tiers buildAnnotationLines ranks pending annotations into before
+// truncating to annotationCap, lowest value first. A changed file with no
+// coverage at all outranks any single range within a partially-covered
+// file: it means nothing in that file ran under test, and it has no line
+// count to compare against a range's size anyway, since it never made it
+// into the coverage report in the first place. A range that overlaps lines
+// the PR's own diff added outranks one that doesn't, since that's code this
+// PR is responsible for rather than a preexisting gap the change happens to
+// sit near.
+const (
+	priorityNoCoverage = iota
+	priorityInPatch
+	priorityElsewhere
+)
+
+// pendingAnnotation is one ::warning outputAnnotations might print, held
+// until every file has been scanned so buildAnnotationLines can rank and cap
+// the full set instead of printing whichever ones happen to come first in
+// report.Files (issue #46).
+type pendingAnnotation struct {
+	line     string
+	priority int
+	// size is the tie-break within a priority tier: a wider gap of untested
+	// code is more useful to surface than a one-line one. Left at 0 for the
+	// no-coverage-at-all file annotations, which sort ahead of every range
+	// on priority alone and have no line count to size them by.
+	size int
+}
+
+func outputAnnotations(report *coverage.Report, changedFiles []string, patchedLines map[string][]diff.LineRange, hasPR bool) {
+	for _, line := range buildAnnotationLines(report, changedFiles, patchedLines, hasPR) {
+		fmt.Println(line)
+	}
+}
+
+// buildAnnotationLines is outputAnnotations' logic, factored out to a pure
+// function so tests can check the exact lines it produces without capturing
+// stdout.
+func buildAnnotationLines(report *coverage.Report, changedFiles []string, patchedLines map[string][]diff.LineRange, hasPR bool) []string {
 	changedSet := make(map[string]bool)
 	for _, f := range changedFiles {
 		changedSet[f] = true
@@ -687,6 +736,8 @@ func outputAnnotations(report *coverage.Report, changedFiles []string) {
 
 	// Track which changed files have coverage data
 	coveredChangedFiles := make(map[string]bool)
+
+	var pending []pendingAnnotation
 
 	for _, file := range report.Files {
 		// Normalize path: strip Go module prefix to get repo-relative path
@@ -715,13 +766,19 @@ func outputAnnotations(report *coverage.Report, changedFiles []string) {
 
 		ranges := comment.GroupConsecutiveLines(file.UncoveredLines)
 		for _, r := range ranges {
+			var line string
 			if r.Start == r.End {
-				fmt.Printf("::warning file=%s,line=%d,title=Uncovered::Line %d not covered by tests\n",
+				line = fmt.Sprintf("::warning file=%s,line=%d,title=Uncovered::Line %d not covered by tests",
 					annotationPath, r.Start, r.Start)
 			} else {
-				fmt.Printf("::warning file=%s,line=%d,endLine=%d,title=Uncovered::Lines %d-%d not covered by tests\n",
+				line = fmt.Sprintf("::warning file=%s,line=%d,endLine=%d,title=Uncovered::Lines %d-%d not covered by tests",
 					annotationPath, r.Start, r.End, r.Start, r.End)
 			}
+			priority := priorityElsewhere
+			if rangeOverlapsPatch(annotationPath, r, patchedLines) {
+				priority = priorityInPatch
+			}
+			pending = append(pending, pendingAnnotation{line: line, priority: priority, size: r.End - r.Start + 1})
 		}
 	}
 
@@ -735,6 +792,52 @@ func outputAnnotations(report *coverage.Report, changedFiles []string) {
 		if !paths.IsSourceFile(changedFile) {
 			continue
 		}
-		fmt.Printf("::warning file=%s,line=1,title=No Coverage::File has no test coverage\n", changedFile)
+		pending = append(pending, pendingAnnotation{
+			line:     fmt.Sprintf("::warning file=%s,line=1,title=No Coverage::File has no test coverage", changedFile),
+			priority: priorityNoCoverage,
+		})
 	}
+
+	// Stable so that within a tier -- same priority, same size -- entries
+	// keep report.Files' order instead of shuffling on every call.
+	sort.SliceStable(pending, func(i, j int) bool {
+		if pending[i].priority != pending[j].priority {
+			return pending[i].priority < pending[j].priority
+		}
+		return pending[i].size > pending[j].size
+	})
+
+	shown := pending
+	suppressed := 0
+	if len(pending) > annotationCap {
+		shown = pending[:annotationCap]
+		suppressed = len(pending) - annotationCap
+	}
+
+	lines := make([]string, 0, len(shown)+1)
+	for _, a := range shown {
+		lines = append(lines, a.line)
+	}
+	if suppressed > 0 {
+		notice := fmt.Sprintf("::notice::%d more coverage annotations not shown (GitHub caps annotations at %d per step)", suppressed, annotationCap)
+		if hasPR {
+			notice += "; see the PR comment for the full list"
+		}
+		lines = append(lines, notice)
+	}
+	return lines
+}
+
+// rangeOverlapsPatch reports whether r shares at least one line with any of
+// the PR diff's added ranges for path. patchedLines is nil when annotations
+// aren't scoped to a PR's changed files at all (show-files != "changed", or
+// there's no PR), in which case this always returns false and ranking falls
+// back to size alone.
+func rangeOverlapsPatch(path string, r comment.LineRange, patchedLines map[string][]diff.LineRange) bool {
+	for _, pr := range patchedLines[path] {
+		if r.Start <= pr.End && pr.Start <= r.End {
+			return true
+		}
+	}
+	return false
 }

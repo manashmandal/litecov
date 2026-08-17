@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/manashmandal/litecov/internal/coverage"
+	"github.com/manashmandal/litecov/internal/diff"
 	"github.com/manashmandal/litecov/internal/github"
 	"github.com/manashmandal/litecov/internal/parser"
 )
@@ -905,6 +906,124 @@ func TestCommentPostOutcome(t *testing.T) {
 			}
 			if fatal != tt.wantFatal {
 				t.Errorf("fatal = %v, want %v", fatal, tt.wantFatal)
+			}
+		})
+	}
+}
+
+// TestBuildAnnotationLines covers issue #46: outputAnnotations printed one
+// ::warning per uncovered range with no cap, but GitHub's Actions toolkit
+// caps each step at 10 warning annotations and silently drops the rest with
+// no sign in the run's UI or its log. Which ten survived depended on
+// report.Files' parse order, not on which uncovered lines actually mattered
+// to the PR. buildAnnotationLines must rank a range that touches the PR's
+// own diff, and a changed file with no coverage at all, ahead of everything
+// else, then truncate to 10 and say how many it left out.
+func TestBuildAnnotationLines(t *testing.T) {
+	bigLines := make([]int, 50)
+	for i := range bigLines {
+		bigLines[i] = i + 1
+	}
+
+	manyLines := make([]int, 12)
+	for i := range manyLines {
+		manyLines[i] = i*2 + 1 // 1, 3, 5, ... 23: 12 single-line ranges, none adjacent
+	}
+	first10 := make([]string, 10)
+	for i, n := range manyLines[:10] {
+		first10[i] = fmt.Sprintf("::warning file=big.go,line=%d,title=Uncovered::Line %d not covered by tests", n, n)
+	}
+
+	tests := []struct {
+		name         string
+		report       *coverage.Report
+		changedFiles []string
+		patchedLines map[string][]diff.LineRange
+		hasPR        bool
+		want         []string
+	}{
+		{
+			name: "no uncovered lines produces no annotations",
+			report: &coverage.Report{
+				Files: []coverage.FileCoverage{{Path: "a.go"}},
+			},
+			want: nil,
+		},
+		{
+			name: "ranked by range size within a tier, not report order",
+			report: &coverage.Report{
+				Files: []coverage.FileCoverage{
+					{Path: "b.go", UncoveredLines: []int{10}},
+					{Path: "a.go", UncoveredLines: []int{1, 2, 3}},
+				},
+			},
+			want: []string{
+				"::warning file=a.go,line=1,endLine=3,title=Uncovered::Lines 1-3 not covered by tests",
+				"::warning file=b.go,line=10,title=Uncovered::Line 10 not covered by tests",
+			},
+		},
+		{
+			name: "a range touching the PR's diff outranks a larger one that doesn't",
+			report: &coverage.Report{
+				Files: []coverage.FileCoverage{
+					{Path: "big.go", UncoveredLines: bigLines},
+					{Path: "small.go", UncoveredLines: []int{5}},
+				},
+			},
+			changedFiles: []string{"big.go", "small.go"},
+			patchedLines: map[string][]diff.LineRange{
+				"small.go": {{Start: 4, End: 6}},
+			},
+			want: []string{
+				"::warning file=small.go,line=5,title=Uncovered::Line 5 not covered by tests",
+				"::warning file=big.go,line=1,endLine=50,title=Uncovered::Lines 1-50 not covered by tests",
+			},
+		},
+		{
+			name: "a changed file with no coverage at all outranks every range, patch or not",
+			report: &coverage.Report{
+				Files: []coverage.FileCoverage{
+					{Path: "covered.go", UncoveredLines: []int{1, 2, 3, 4, 5}},
+				},
+			},
+			changedFiles: []string{"empty.go", "covered.go"},
+			patchedLines: map[string][]diff.LineRange{
+				"covered.go": {{Start: 1, End: 5}},
+			},
+			want: []string{
+				"::warning file=empty.go,line=1,title=No Coverage::File has no test coverage",
+				"::warning file=covered.go,line=1,endLine=5,title=Uncovered::Lines 1-5 not covered by tests",
+			},
+		},
+		{
+			name: "more than 10 annotations are truncated with a suppressed-count notice",
+			report: &coverage.Report{
+				Files: []coverage.FileCoverage{{Path: "big.go", UncoveredLines: manyLines}},
+			},
+			want: append(append([]string{}, first10...),
+				"::notice::2 more coverage annotations not shown (GitHub caps annotations at 10 per step)"),
+		},
+		{
+			name: "the truncation notice points at the PR comment when a PR exists",
+			report: &coverage.Report{
+				Files: []coverage.FileCoverage{{Path: "big.go", UncoveredLines: manyLines}},
+			},
+			hasPR: true,
+			want: append(append([]string{}, first10...),
+				"::notice::2 more coverage annotations not shown (GitHub caps annotations at 10 per step); see the PR comment for the full list"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildAnnotationLines(tt.report, tt.changedFiles, tt.patchedLines, tt.hasPR)
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %d lines, want %d\ngot:  %v\nwant: %v", len(got), len(tt.want), got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("line %d = %q, want %q", i, got[i], tt.want[i])
+				}
 			}
 		})
 	}
