@@ -182,6 +182,7 @@ func main() {
 		PRNumber:      prNumber,
 		BaseBranch:    *baseBranch,
 		PatchCoverage: coverage.CalculatePatchCoverage(report, patchedLines),
+		FilePatches:   coverage.CalculateFilePatchCoverage(report, patchedLines),
 	}
 	if baseErr != nil {
 		opts.BaseError = baseErr.Error()

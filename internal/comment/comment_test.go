@@ -844,6 +844,67 @@ func TestFormatImpactedFiles(t *testing.T) {
 	}
 }
 
+// TestFormatImpactedFiles_UsesPatchCoverageWhenAvailable reproduces issue #9:
+// a file at 95% whole-file coverage whose PR-added lines are all untested
+// must not render as 95% with a passing status. When FilePatches has an
+// entry for a file, its patch percentage and patch-scoped uncovered lines
+// replace the whole-file numbers.
+func TestFormatImpactedFiles_UsesPatchCoverageWhenAvailable(t *testing.T) {
+	files := []coverage.FileCoverage{
+		{
+			Path:           "big.go",
+			LinesCovered:   950,
+			LinesTotal:     1000,
+			UncoveredLines: []int{10, 500, 501, 502, 900}, // 500-502 are the PR's new lines
+		},
+	}
+	opts := Options{
+		FilePatches: map[string]coverage.FilePatch{
+			"big.go": {
+				Coverage:       coverage.PatchCoverage{Covered: 0, Total: 3},
+				UncoveredLines: []int{500, 501, 502},
+			},
+		},
+	}
+
+	result := formatImpactedFiles(files, opts)
+
+	if !strings.Contains(result, "`0.00%`") {
+		t.Errorf("expected the file's 0%% patch coverage, not its 95%% whole-file average, in %q", result)
+	}
+	if strings.Contains(result, "95.00%") {
+		t.Errorf("whole-file coverage leaked into the row despite patch data being available: %q", result)
+	}
+	if !strings.Contains(result, "❌") {
+		t.Error("expected a failing status for 0% patch coverage, not a passing one derived from whole-file coverage")
+	}
+	if strings.Contains(result, "L10") || strings.Contains(result, "L900") {
+		t.Errorf("Uncovered Lines must be restricted to the diff, not the whole file's uncovered lines: %q", result)
+	}
+	if !strings.Contains(result, "L500-502") {
+		t.Errorf("missing the patch's own uncovered range in %q", result)
+	}
+}
+
+// TestFormatImpactedFiles_NoPatchDataFallsBackToWholeFile keeps the
+// pre-issue-#9 behavior for a file FilePatches has no entry for: no PR diff
+// was available, the file wasn't part of it, or none of its added lines were
+// ever instrumented.
+func TestFormatImpactedFiles_NoPatchDataFallsBackToWholeFile(t *testing.T) {
+	files := []coverage.FileCoverage{
+		{Path: "a.go", LinesCovered: 90, LinesTotal: 100, UncoveredLines: []int{5, 6}},
+	}
+
+	result := formatImpactedFiles(files, Options{FilePatches: map[string]coverage.FilePatch{}})
+
+	if !strings.Contains(result, "`90.00%`") {
+		t.Errorf("expected whole-file 90%% when no patch entry exists, got %q", result)
+	}
+	if !strings.Contains(result, "L5-6") {
+		t.Errorf("expected whole-file uncovered lines when no patch entry exists, got %q", result)
+	}
+}
+
 func TestFormatImpactedFiles_Empty(t *testing.T) {
 	result := formatImpactedFiles(nil, Options{})
 	if result != "" {

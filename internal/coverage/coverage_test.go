@@ -869,3 +869,139 @@ func TestCalculatePatchCoverage_AmbiguousMatchSkipped(t *testing.T) {
 		t.Errorf("CalculatePatchCoverage = %+v, want zero value (ambiguous match must not guess)", result)
 	}
 }
+
+func TestCalculateFilePatchCoverage_NilReport(t *testing.T) {
+	result := CalculateFilePatchCoverage(nil, map[string][]diff.LineRange{"a.go": {{Start: 1, End: 5}}})
+	if len(result) != 0 {
+		t.Errorf("CalculateFilePatchCoverage(nil, ...) = %+v, want empty map", result)
+	}
+}
+
+func TestCalculateFilePatchCoverage_NoAddedLines(t *testing.T) {
+	report := &Report{
+		Files: []FileCoverage{
+			{Path: "a.go", CoveredLines: []int{1, 2}, UncoveredLines: []int{3}},
+		},
+	}
+	result := CalculateFilePatchCoverage(report, nil)
+	if len(result) != 0 {
+		t.Errorf("CalculateFilePatchCoverage(report, nil) = %+v, want empty map (no PR diff data)", result)
+	}
+}
+
+// TestCalculateFilePatchCoverage_WellCoveredFileWithUntestedPatch reproduces
+// issue #9: a large, well-covered file's whole-file percentage stays high
+// even when the lines this PR added to it are untested.
+// CalculateFilePatchCoverage must report that file's own patch numbers
+// instead of letting its whole-file average hide them.
+func TestCalculateFilePatchCoverage_WellCoveredFileWithUntestedPatch(t *testing.T) {
+	report := &Report{
+		Files: []FileCoverage{
+			{
+				Path:           "big.go",
+				LinesCovered:   950,
+				LinesTotal:     1000,
+				CoveredLines:   []int{1, 2, 3}, // stand-ins for the file's other 950 covered lines
+				UncoveredLines: []int{500, 501, 502},
+			},
+		},
+	}
+	addedLines := map[string][]diff.LineRange{
+		"big.go": {{Start: 500, End: 502}}, // the PR's 3 new lines, none of them tested
+	}
+
+	result := CalculateFilePatchCoverage(report, addedLines)
+
+	fp, ok := result["big.go"]
+	if !ok {
+		t.Fatal("missing patch entry for big.go")
+	}
+	if fp.Coverage.Total != 3 || fp.Coverage.Covered != 0 {
+		t.Errorf("Coverage = %+v, want {Covered:0 Total:3}", fp.Coverage)
+	}
+	if got := fp.Coverage.Percentage(); got != 0.0 {
+		t.Errorf("Percentage() = %v, want 0.0 (whole-file 95%% must not leak into the patch number)", got)
+	}
+	if len(fp.UncoveredLines) != 3 {
+		t.Fatalf("UncoveredLines = %v, want 3 entries", fp.UncoveredLines)
+	}
+	for i, want := range []int{500, 501, 502} {
+		if fp.UncoveredLines[i] != want {
+			t.Errorf("UncoveredLines[%d] = %d, want %d", i, fp.UncoveredLines[i], want)
+		}
+	}
+}
+
+func TestCalculateFilePatchCoverage_KeyedByReportPath(t *testing.T) {
+	// The result must be indexable by report.Files[i].Path directly, not by
+	// addedLines's key, since the two can differ after suffix matching
+	// (issue #9, the same reasoning as CalculatePatchCoverage's
+	// PathPrefixMismatchTolerated case).
+	report := &Report{
+		Files: []FileCoverage{
+			{Path: "/home/runner/work/repo/repo/src/a.go", CoveredLines: []int{1}, UncoveredLines: []int{2}},
+		},
+	}
+	addedLines := map[string][]diff.LineRange{
+		"src/a.go": {{Start: 1, End: 2}},
+	}
+
+	result := CalculateFilePatchCoverage(report, addedLines)
+
+	fp, ok := result["/home/runner/work/repo/repo/src/a.go"]
+	if !ok {
+		t.Fatalf("missing patch entry keyed by report path, got %+v", result)
+	}
+	if fp.Coverage.Total != 2 || fp.Coverage.Covered != 1 {
+		t.Errorf("Coverage = %+v, want {Covered:1 Total:2}", fp.Coverage)
+	}
+}
+
+func TestCalculateFilePatchCoverage_NoCoverableAddedLinesExcluded(t *testing.T) {
+	// A file whose added lines are all blank lines/comments/braces -- none
+	// of them instrumented -- gets no entry, the same as it contributing
+	// nothing to CalculatePatchCoverage's aggregate (issue #9).
+	report := &Report{
+		Files: []FileCoverage{
+			{Path: "a.go", CoveredLines: []int{2}, UncoveredLines: nil},
+		},
+	}
+	addedLines := map[string][]diff.LineRange{
+		"a.go": {{Start: 10, End: 12}}, // none of these are lines the report has data for
+	}
+
+	result := CalculateFilePatchCoverage(report, addedLines)
+
+	if len(result) != 0 {
+		t.Errorf("CalculateFilePatchCoverage = %+v, want empty map", result)
+	}
+}
+
+func TestCalculateFilePatchCoverage_MultipleFilesEachOwnEntry(t *testing.T) {
+	report := &Report{
+		Files: []FileCoverage{
+			{Path: "a.go", CoveredLines: []int{1}, UncoveredLines: []int{2}},
+			{Path: "b.go", CoveredLines: []int{10, 11}, UncoveredLines: nil},
+			{Path: "untouched.go", CoveredLines: []int{1}, UncoveredLines: nil},
+		},
+	}
+	addedLines := map[string][]diff.LineRange{
+		"a.go": {{Start: 1, End: 2}},
+		"b.go": {{Start: 10, End: 11}},
+	}
+
+	result := CalculateFilePatchCoverage(report, addedLines)
+
+	if len(result) != 2 {
+		t.Fatalf("got %d entries, want 2 (a.go and b.go, not untouched.go)", len(result))
+	}
+	if fp := result["a.go"]; fp.Coverage.Total != 2 || fp.Coverage.Covered != 1 {
+		t.Errorf("a.go Coverage = %+v, want {Covered:1 Total:2}", fp.Coverage)
+	}
+	if fp := result["b.go"]; fp.Coverage.Total != 2 || fp.Coverage.Covered != 2 {
+		t.Errorf("b.go Coverage = %+v, want {Covered:2 Total:2}", fp.Coverage)
+	}
+	if _, ok := result["untouched.go"]; ok {
+		t.Error("untouched.go should have no patch entry, its diff has no added lines")
+	}
+}

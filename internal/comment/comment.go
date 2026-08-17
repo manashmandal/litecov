@@ -40,6 +40,15 @@ type Options struct {
 	// Patch segment out entirely in that case instead of claiming a 0%
 	// that was never measured (issue #6).
 	PatchCoverage coverage.PatchCoverage
+	// FilePatches is PatchCoverage's per-file breakdown, computed by
+	// coverage.CalculateFilePatchCoverage and keyed by the same Path a
+	// FileCoverage in the report carries. formatImpactedFiles renders a
+	// file's patch percentage and patch-scoped uncovered lines when its
+	// path has an entry here, so the Impacted Files table reports whether
+	// the PR's own lines are tested instead of the file's whole-file
+	// average (issue #9). A file with no entry falls back to its
+	// whole-file numbers, same as when FilePatches is nil entirely.
+	FilePatches map[string]coverage.FilePatch
 }
 
 func Format(report *coverage.Report, opts Options) string {
@@ -340,10 +349,23 @@ func formatImpactedFiles(files []coverage.FileCoverage, opts Options) string {
 
 	for _, f := range files {
 		pct := f.Percentage()
+		uncovered := f.UncoveredLines
+		// A file with patch data reports the coverage of only the lines
+		// this PR added to it, not the whole file's average: a large,
+		// well-covered file that gained a few untested lines must not
+		// render as a passing percentage with a green check just because
+		// its pre-existing lines are tested (issue #9). Falls back to the
+		// whole-file numbers when this file has no patch data -- not a PR
+		// build, the file wasn't part of the diff, or none of its added
+		// lines were ever instrumented.
+		if patch, ok := opts.FilePatches[f.Path]; ok {
+			pct = patch.Coverage.Percentage()
+			uncovered = patch.UncoveredLines
+		}
 		emoji := getStatusEmoji(pct)
 		fileName := formatFileName(f.Path, opts)
 		coverageStr := fmt.Sprintf("`%.2f%%`", pct)
-		uncoveredStr := formatUncoveredLines(f.UncoveredLines, opts.RepoURL, opts.SHA, f.Path)
+		uncoveredStr := formatUncoveredLines(uncovered, opts.RepoURL, opts.SHA, f.Path)
 		// Mark files with no coverage data
 		if f.LinesTotal == 0 {
 			coverageStr = "`⚠️ no tests`"

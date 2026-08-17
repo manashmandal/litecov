@@ -424,6 +424,75 @@ func CalculatePatchCoverage(report *Report, addedLines map[string][]diff.LineRan
 	return result
 }
 
+// FilePatch is one report file's contribution to patch coverage: the tally
+// CalculatePatchCoverage sums into its report-wide aggregate, plus which of
+// the file's UncoveredLines fall inside the PR's added lines. It lets the
+// Impacted Files table report a file's own patch percentage and
+// patch-scoped uncovered lines instead of FileCoverage.Percentage and
+// FileCoverage.UncoveredLines, which describe the whole file regardless of
+// what the PR actually touched (issue #9).
+type FilePatch struct {
+	Coverage       PatchCoverage
+	UncoveredLines []int
+}
+
+// CalculateFilePatchCoverage is CalculatePatchCoverage broken down per file
+// instead of summed into one report-wide total. See CalculatePatchCoverage's
+// doc comment for the intersection rule -- only coverable added lines count
+// -- and for why paths are matched with paths.FindMatchingChangedFile
+// instead of compared for equality.
+//
+// The result is keyed by each report file's own Path (report.Files[i].Path),
+// not by addedLines's key, so a caller already holding a FileCoverage or
+// walking Report.Files can look itself up directly instead of repeating the
+// path match.
+//
+// A file with no coverable added lines has no entry in the result, the same
+// as it contributing nothing to CalculatePatchCoverage's aggregate.
+func CalculateFilePatchCoverage(report *Report, addedLines map[string][]diff.LineRange) map[string]FilePatch {
+	result := make(map[string]FilePatch)
+	if report == nil || len(addedLines) == 0 {
+		return result
+	}
+
+	changedSet := make(map[string]bool, len(addedLines))
+	for path := range addedLines {
+		changedSet[path] = true
+	}
+
+	for i := range report.Files {
+		f := &report.Files[i]
+		matched := paths.FindMatchingChangedFile(f.Path, changedSet)
+		if matched == "" {
+			continue
+		}
+
+		added := addedLineSet(addedLines[matched])
+		if len(added) == 0 {
+			continue
+		}
+
+		var fp FilePatch
+		for _, ln := range f.CoveredLines {
+			if added[ln] {
+				fp.Coverage.Covered++
+				fp.Coverage.Total++
+			}
+		}
+		for _, ln := range f.UncoveredLines {
+			if added[ln] {
+				fp.Coverage.Total++
+				fp.UncoveredLines = append(fp.UncoveredLines, ln)
+			}
+		}
+		if fp.Coverage.Total > 0 {
+			result[f.Path] = fp
+		}
+	}
+
+	return result
+}
+
 // addedLineSet expands ranges (inclusive Start/End pairs) into a line-number
 // membership set, so intersecting them against a file's CoveredLines and
 // UncoveredLines is a map lookup per line instead of a sorted merge.
