@@ -258,6 +258,60 @@ func TestResolveThreshold(t *testing.T) {
 	}
 }
 
+// TestParseShowFiles guards issue #85. threshold: and worst: each used to
+// discard their strconv parse error, so an unparseable suffix silently left
+// the corresponding comment.Options field at 0 instead of failing the run,
+// and a value that matched neither prefix and wasn't "all" or "changed"
+// either fell all the way through filterFiles' default case and rendered
+// every file, the same as show-files: all.
+func TestParseShowFiles(t *testing.T) {
+	tests := []struct {
+		name          string
+		showFiles     string
+		wantThreshold float64
+		wantWorstN    int
+		wantErr       bool
+	}{
+		{name: "all", showFiles: "all"},
+		{name: "changed", showFiles: "changed"},
+		{name: "valid threshold", showFiles: "threshold:80", wantThreshold: 80},
+		{name: "threshold at lower bound", showFiles: "threshold:0", wantThreshold: 0},
+		{name: "threshold at upper bound", showFiles: "threshold:100", wantThreshold: 100},
+		{name: "threshold non-numeric renders an empty table without this", showFiles: "threshold:abc", wantErr: true},
+		{name: "threshold below zero", showFiles: "threshold:-1", wantErr: true},
+		{name: "threshold above 100", showFiles: "threshold:150", wantErr: true},
+		{name: "threshold NaN", showFiles: "threshold:NaN", wantErr: true},
+		{name: "valid worst", showFiles: "worst:2", wantWorstN: 2},
+		{name: "worst non-numeric renders an empty table without this", showFiles: "worst:abc", wantErr: true},
+		{name: "worst with trailing garbage after the leading digit", showFiles: "worst:3abc", wantErr: true},
+		{name: "worst zero", showFiles: "worst:0", wantErr: true},
+		{name: "worst negative", showFiles: "worst:-1", wantErr: true},
+		{name: "unrecognized mode used to silently behave like all", showFiles: "bogusmode", wantErr: true},
+		{name: "empty value", showFiles: "", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotThreshold, gotWorstN, err := parseShowFiles(tt.showFiles)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("parseShowFiles(%q) returned no error, want one", tt.showFiles)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseShowFiles(%q) returned unexpected error: %v", tt.showFiles, err)
+			}
+			if gotThreshold != tt.wantThreshold {
+				t.Errorf("threshold = %v, want %v", gotThreshold, tt.wantThreshold)
+			}
+			if gotWorstN != tt.wantWorstN {
+				t.Errorf("worstN = %v, want %v", gotWorstN, tt.wantWorstN)
+			}
+		})
+	}
+}
+
 // TestCommitStatusTargetURL guards issue #48: SetCommitStatus never sent
 // target_url, so the check row on a PR had no "Details" link back to the
 // run that produced it.

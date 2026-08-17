@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"math"
 	"os"
 	"sort"
 	"strconv"
@@ -34,6 +35,23 @@ func main() {
 	pathPrefix := flag.String("path-prefix", "", "Prefix to strip from every coverage report path, e.g. \"backend/\"")
 	pathFixesInput := flag.String("path-fixes", "", "Newline separated \"before::after\" path rewrite rules, matching Codecov's fixes:")
 	flag.Parse()
+
+	// show-files is validated once here, before any coverage file is opened
+	// or GitHub API call is made. An unrecognized value used to reach
+	// filterFiles instead of failing the run: threshold: and worst: each
+	// discarded a strconv parse error and left the corresponding
+	// comment.Options field at its zero value, which read as "no file
+	// clears the bar" and rendered an empty file table with nothing
+	// explaining why, and a value that matched neither prefix and wasn't
+	// "all" or "changed" either -- a typo like "bogusmode" -- fell through
+	// filterFiles' default case, which returns every file, so the typo
+	// silently behaved like show-files: all. This fails the run the same
+	// way an unknown -format value already does below (issue #85).
+	showFilesThreshold, showFilesWorstN, err := parseShowFiles(*showFiles)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Invalid %v\n", err)
+		os.Exit(1)
+	}
 
 	// Environment variable overrides for GitHub Action
 	if *baseCoverageFile == "" {
@@ -218,24 +236,11 @@ func main() {
 		FilePatches:   coverage.CalculateFilePatchCoverage(report, patchedLines),
 		GoodThreshold: *goodThreshold,
 		WarnThreshold: *warnThreshold,
+		Threshold:     showFilesThreshold,
+		WorstN:        showFilesWorstN,
 	}
 	if baseErr != nil {
 		opts.BaseError = baseErr.Error()
-	}
-	if strings.HasPrefix(*showFiles, "threshold:") {
-		val, _ := strconv.ParseFloat(strings.TrimPrefix(*showFiles, "threshold:"), 64)
-		opts.Threshold = val
-	}
-	if strings.HasPrefix(*showFiles, "worst:") {
-		// A discarded parse error let a non-numeric or negative N reach
-		// filterFiles as a raw slice bound, panicking instead of failing
-		// cleanly (issue #84).
-		val, err := strconv.Atoi(strings.TrimPrefix(*showFiles, "worst:"))
-		if err != nil || val <= 0 {
-			fmt.Fprintf(os.Stderr, "Invalid show-files value %q: worst:N requires a positive integer\n", *showFiles)
-			os.Exit(1)
-		}
-		opts.WorstN = val
 	}
 
 	// Generate comment with or without comparison
@@ -471,6 +476,41 @@ func resolveThreshold(flagValue float64, inputEnvValue string) float64 {
 		return flagValue
 	}
 	return val
+}
+
+// parseShowFiles validates showFiles against its four accepted forms --
+// all, changed, threshold:<float 0-100>, or worst:<positive int> -- and
+// returns the number main needs to carry into comment.Options for
+// whichever of threshold: or worst: was used. Both return values are 0 for
+// "all" and "changed", which don't carry a number.
+//
+// threshold:'s bound also rejects NaN: strconv.ParseFloat("NaN", 64)
+// succeeds with no error, and a NaN Threshold would reach filterFiles'
+// `f.Percentage() < opts.Threshold` and never be true either, the same
+// empty-table failure mode as everything else this guards against
+// (issue #85).
+func parseShowFiles(showFiles string) (threshold float64, worstN int, err error) {
+	switch {
+	case showFiles == "all", showFiles == "changed":
+		return 0, 0, nil
+
+	case strings.HasPrefix(showFiles, "threshold:"):
+		val, perr := strconv.ParseFloat(strings.TrimPrefix(showFiles, "threshold:"), 64)
+		if perr != nil || math.IsNaN(val) || val < 0 || val > 100 {
+			return 0, 0, fmt.Errorf("show-files value %q: threshold:N requires a number between 0 and 100", showFiles)
+		}
+		return val, 0, nil
+
+	case strings.HasPrefix(showFiles, "worst:"):
+		val, perr := strconv.Atoi(strings.TrimPrefix(showFiles, "worst:"))
+		if perr != nil || val <= 0 {
+			return 0, 0, fmt.Errorf("show-files value %q: worst:N requires a positive integer", showFiles)
+		}
+		return 0, val, nil
+
+	default:
+		return 0, 0, fmt.Errorf("show-files value %q: expected all, changed, threshold:N, or worst:N", showFiles)
+	}
 }
 
 // resolveBaseBranch decides the base branch name shown in the diff header.
