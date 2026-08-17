@@ -1,6 +1,13 @@
 package coverage
 
-import "github.com/manashmandal/litecov/internal/paths"
+import (
+	"fmt"
+	"os"
+	"sort"
+	"strings"
+
+	"github.com/manashmandal/litecov/internal/paths"
+)
 
 type FileCoverage struct {
 	Path           string
@@ -128,12 +135,6 @@ func NewComparison(head, base *Report, changedFiles []string, addedFiles, remove
 		}
 	}
 
-	// Build a map of head files for quick lookup
-	headFileMap := make(map[string]*FileCoverage)
-	for i := range head.Files {
-		headFileMap[head.Files[i].Path] = &head.Files[i]
-	}
-
 	changedFileSet := make(map[string]bool)
 	for _, f := range changedFiles {
 		changedFileSet[f] = true
@@ -143,6 +144,13 @@ func NewComparison(head, base *Report, changedFiles []string, addedFiles, remove
 
 	// Track which changed files we've seen in coverage data
 	coveredChangedFiles := make(map[string]bool)
+	// Track which base files got attached to a head file in the loop below,
+	// exact match or suffix fallback, so the base-only pass further down
+	// doesn't also report a suffix-matched file as missing from head: the
+	// same prefix mismatch that broke the forward base lookup broke that
+	// reverse check too, since it also compared paths for exact equality
+	// (issue #30).
+	matchedBasePaths := make(map[string]bool)
 
 	for _, headFile := range head.Files {
 		matchedChangedFile := ""
@@ -169,14 +177,29 @@ func NewComparison(head, base *Report, changedFiles []string, addedFiles, remove
 			IsNew:        addedFiles[filePath],
 		}
 
-		if baseFile, exists := baseFileMap[headFile.Path]; exists {
+		baseFile, exists := baseFileMap[headFile.Path]
+		if !exists {
+			// Exact match failed: base and head reports can use different
+			// path prefixes (an absolute vs. relative path, a different
+			// runner workspace, a different Cobertura <sources> element, a
+			// base produced by another tool), so fall back to the same
+			// suffix matching the rest of the pipeline already tolerates
+			// (paths.FindMatchingChangedFile, findFileInReport) instead of
+			// treating a file that merely changed prefix as having no base
+			// data at all (issue #30).
+			if bf := findBaseFileBySuffix(base, headFile.Path); bf != nil {
+				baseFile, exists = bf, true
+			}
+		}
+		if exists {
 			fc.BaseCoverage = baseFile.Percentage()
 			fc.Delta = fc.HeadCoverage - fc.BaseCoverage
+			matchedBasePaths[baseFile.Path] = true
 		} else {
-			// No base entry for this path: BaseCoverage and Delta stay at
-			// their zero-value sentinel rather than computing HeadCoverage -
-			// 0, which would assert a measurement that was never taken
-			// (issue #32).
+			// No base entry for this path, exact or suffix-matched:
+			// BaseCoverage and Delta stay at their zero-value sentinel
+			// rather than computing HeadCoverage - 0, which would assert a
+			// measurement that was never taken (issue #32).
 			fc.NoBaseData = true
 		}
 
@@ -235,7 +258,7 @@ func NewComparison(head, base *Report, changedFiles []string, addedFiles, remove
 	if base != nil && !filterByChanged {
 		for i := range base.Files {
 			baseFile := &base.Files[i]
-			if _, exists := headFileMap[baseFile.Path]; exists {
+			if matchedBasePaths[baseFile.Path] {
 				continue
 			}
 			comp.FileChanges = append(comp.FileChanges, FileChange{
@@ -248,6 +271,45 @@ func NewComparison(head, base *Report, changedFiles []string, addedFiles, remove
 	}
 
 	return comp
+}
+
+// findBaseFileBySuffix falls back to suffix matching when headPath has no
+// exact entry in base's file map: a prefix difference between the two
+// reports (absolute vs. relative paths, a different runner workspace, a
+// different Cobertura <sources> element, a base produced by another tool)
+// otherwise turns an existing file into one with no base data (issue #30).
+//
+// Candidates are collected before deciding anything, the same way
+// paths.FindMatchingChangedFile does, and a match is only accepted when
+// exactly one base file's path suffix-matches headPath: zero candidates
+// stays "no match", and two or more is ambiguous and is treated as "no
+// match" too, with a warning naming the candidates so the ambiguity is
+// visible instead of being resolved by picking one arbitrarily.
+func findBaseFileBySuffix(base *Report, headPath string) *FileCoverage {
+	if base == nil {
+		return nil
+	}
+	var candidates []*FileCoverage
+	for i := range base.Files {
+		if paths.HasSuffix(headPath, base.Files[i].Path) || paths.HasSuffix(base.Files[i].Path, headPath) {
+			candidates = append(candidates, &base.Files[i])
+		}
+	}
+	switch len(candidates) {
+	case 0:
+		return nil
+	case 1:
+		return candidates[0]
+	default:
+		names := make([]string, len(candidates))
+		for i, c := range candidates {
+			names[i] = c.Path
+		}
+		sort.Strings(names)
+		fmt.Fprintf(os.Stderr, "Warning: head path %q matches multiple base files (%s), skipping\n",
+			headPath, strings.Join(names, ", "))
+		return nil
+	}
 }
 
 // findFileInReport finds a file in a report by path suffix matching

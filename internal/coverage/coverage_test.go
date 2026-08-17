@@ -594,3 +594,93 @@ func TestNewComparison_IsDeletedFromRemovedFiles(t *testing.T) {
 		t.Errorf("b.go BaseCoverage = %v, want 100.0", bChange.BaseCoverage)
 	}
 }
+
+func TestNewComparison_BaseMatchTolerantOfPrefix(t *testing.T) {
+	// Reproduces issue #30: the base file lookup used exact string equality
+	// while every other path comparison in the pipeline
+	// (paths.FindMatchingChangedFile, findFileInReport) tolerates a prefix
+	// difference between the two paths. An absolute head path from a
+	// GitHub Actions checkout and a repo-relative base path from a
+	// differently-configured base run still name the same file and must
+	// match.
+	head := &Report{
+		Files: []FileCoverage{
+			{Path: "/home/runner/work/repo/repo/src/a.py", LinesCovered: 90, LinesTotal: 100},
+		},
+		Coverage: 90.0,
+	}
+	base := &Report{
+		Files: []FileCoverage{
+			{Path: "src/a.py", LinesCovered: 80, LinesTotal: 100},
+		},
+		Coverage: 80.0,
+	}
+
+	comp := NewComparison(head, base, nil, nil, nil)
+
+	if len(comp.FileChanges) != 1 {
+		t.Fatalf("FileChanges length = %v, want 1", len(comp.FileChanges))
+	}
+
+	fc := comp.FileChanges[0]
+	if fc.NoBaseData {
+		t.Error("NoBaseData should be false: src/a.py exists in base under a different path prefix")
+	}
+	if fc.BaseCoverage != 80.0 {
+		t.Errorf("BaseCoverage = %v, want 80.0", fc.BaseCoverage)
+	}
+	if fc.Delta != 10.0 {
+		t.Errorf("Delta = %v, want 10.0 (90.0 - 80.0); an exact-match lookup reports this as a fabricated new file instead", fc.Delta)
+	}
+	if fc.IsNew {
+		t.Error("IsNew should be false: no PR diff status was supplied, and a prefix mismatch is not an added file")
+	}
+}
+
+func TestNewComparison_BaseMatchAmbiguousSuffixSkipped(t *testing.T) {
+	// The suffix-match fallback added for issue #30 must not resolve an
+	// ambiguous match by picking an arbitrary base file. Same filename at
+	// two directory depths in a monorepo (mirrors paths_test.go's
+	// TestFindMatchingChangedFileAmbiguous) must fall back to NoBaseData
+	// rather than silently attaching one candidate's coverage over the
+	// other. The two base files themselves still show up as their own
+	// unmatched entries (issue #31 behavior): the match is genuinely
+	// ambiguous, so the pipeline cannot claim they survived into head
+	// either.
+	head := &Report{
+		Files: []FileCoverage{
+			{Path: "github.com/foo/bar/pkg/internal/x.go", LinesCovered: 50, LinesTotal: 100},
+		},
+		Coverage: 50.0,
+	}
+	base := &Report{
+		Files: []FileCoverage{
+			{Path: "internal/x.go", LinesCovered: 10, LinesTotal: 100},
+			{Path: "pkg/internal/x.go", LinesCovered: 90, LinesTotal: 100},
+		},
+		Coverage: 50.0,
+	}
+
+	comp := NewComparison(head, base, nil, nil, nil)
+
+	var headChange FileChange
+	found := false
+	for _, fc := range comp.FileChanges {
+		if fc.Path == "github.com/foo/bar/pkg/internal/x.go" {
+			headChange = fc
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("head file should have a FileChange entry")
+	}
+	if !headChange.NoBaseData {
+		t.Error("NoBaseData should be true: two base files ambiguously suffix-match, so neither should be picked")
+	}
+	if headChange.BaseCoverage != 0 {
+		t.Errorf("BaseCoverage = %v, want 0 (sentinel; an ambiguous match must not attach either candidate)", headChange.BaseCoverage)
+	}
+	if headChange.Delta != 0 {
+		t.Errorf("Delta = %v, want 0 (sentinel; an ambiguous match must not compute a delta from either candidate)", headChange.Delta)
+	}
+}
