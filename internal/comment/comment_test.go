@@ -1739,6 +1739,10 @@ func TestFormatCoverageDiffWithComparison(t *testing.T) {
 		}
 	})
 
+	// issue #75: an unset base branch used to render as "main" here, a guess
+	// that's wrong for any repo whose default branch isn't main. With no
+	// BaseBranch configured, the header must say the base is unknown
+	// instead of inventing one.
 	t.Run("without base", func(t *testing.T) {
 		comp := &coverage.Comparison{
 			Head: &coverage.Report{
@@ -1760,8 +1764,8 @@ func TestFormatCoverageDiffWithComparison(t *testing.T) {
 		if !strings.Contains(result, "HEAD") {
 			t.Error("should use HEAD when no PR number")
 		}
-		if !strings.Contains(result, "main") {
-			t.Error("should default to main branch")
+		if !strings.Contains(result, "BASE") {
+			t.Error("should render BASE when no base branch name is known, not invent main")
 		}
 	})
 

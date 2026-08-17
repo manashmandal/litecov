@@ -40,7 +40,7 @@ inputs:
   base-branch:
     description: 'Base branch name for display in diff header'
     required: false
-    default: 'main'
+    default: ${{ github.event.pull_request.base.ref }}
   path-prefix:
     description: 'Prefix to strip from every coverage report path, e.g. "backend/"'
     required: false

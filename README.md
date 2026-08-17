@@ -168,7 +168,7 @@ so it can diff them.
 | `title` | `Coverage Report` | Comment header |
 | `annotations` | `false` | Output GitHub annotations for uncovered lines |
 | `base-coverage-file` | None | Path to a base branch coverage file, enables comparison mode |
-| `base-branch` | `main` | Base branch name shown in the diff header |
+| `base-branch` | PR base branch | Base branch name shown in the diff header |
 | `token` | `GITHUB_TOKEN` | GitHub token |
 
 ### Show Files Options

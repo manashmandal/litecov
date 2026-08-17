@@ -24,7 +24,7 @@ func main() {
 	title := flag.String("title", "Coverage Report", "Comment title")
 	annotations := flag.Bool("annotations", false, "Output GitHub annotations for uncovered lines")
 	baseCoverageFile := flag.String("base-coverage-file", "", "Path to base branch coverage file for comparison")
-	baseBranch := flag.String("base-branch", "main", "Base branch name for comparison display")
+	baseBranch := flag.String("base-branch", "", "Base branch name for comparison display")
 	pathPrefix := flag.String("path-prefix", "", "Prefix to strip from every coverage report path, e.g. \"backend/\"")
 	pathFixesInput := flag.String("path-fixes", "", "Newline separated \"before::after\" path rewrite rules, matching Codecov's fixes:")
 	flag.Parse()
@@ -33,9 +33,7 @@ func main() {
 	if *baseCoverageFile == "" {
 		*baseCoverageFile = os.Getenv("INPUT_BASE_COVERAGE_FILE")
 	}
-	if envBaseBranch := os.Getenv("INPUT_BASE_BRANCH"); envBaseBranch != "" {
-		*baseBranch = envBaseBranch
-	}
+	*baseBranch = resolveBaseBranch(*baseBranch, os.Getenv("INPUT_BASE_BRANCH"), os.Getenv("GITHUB_BASE_REF"))
 	if *pathPrefix == "" {
 		*pathPrefix = os.Getenv("INPUT_PATH_PREFIX")
 	}
@@ -306,6 +304,28 @@ func commitStatusForPatchCoverage(patch coverage.PatchCoverage, threshold float6
 		return "failure", fmt.Sprintf("%.2f%% patch coverage (minimum: %.2f%%)", pct, threshold)
 	}
 	return "success", fmt.Sprintf("%.2f%% patch coverage", pct)
+}
+
+// resolveBaseBranch decides the base branch name shown in the diff header.
+// inputBaseBranch (INPUT_BASE_BRANCH, the action.yml input) wins when set,
+// matching how every other INPUT_ override in main already takes priority
+// over its flag. flagValue -- the -base-branch flag, which entrypoint.sh
+// never sets but a direct binary invocation might -- is next. githubBaseRef
+// (GITHUB_BASE_REF), which GitHub Actions sets automatically on every
+// pull_request and pull_request_target event, is consulted last and used to
+// never be read at all: with neither override set, the base branch was just
+// the flag's hardcoded "main" default, which named the wrong branch for any
+// repo whose default branch isn't main (issue #75). Returns "" when none of
+// the three resolved to anything, so the caller can say the base is unknown
+// instead of guessing.
+func resolveBaseBranch(flagValue, inputBaseBranch, githubBaseRef string) string {
+	if inputBaseBranch != "" {
+		return inputBaseBranch
+	}
+	if flagValue != "" {
+		return flagValue
+	}
+	return githubBaseRef
 }
 
 func getPRNumber(eventPath string) (int, error) {

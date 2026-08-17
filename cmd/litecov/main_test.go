@@ -144,6 +144,67 @@ func TestCommitStatusForPatchCoverage_CatchesWhatProjectMisses(t *testing.T) {
 	}
 }
 
+// TestResolveBaseBranch reproduces issue #75: the base branch name was a
+// hardcoded "main" literal, and GITHUB_BASE_REF -- which GitHub Actions sets
+// automatically on every pull_request and pull_request_target event -- was
+// never read. resolveBaseBranch must prefer an explicit override but fall
+// back to GITHUB_BASE_REF, and return "" rather than inventing "main" when
+// nothing resolved at all.
+func TestResolveBaseBranch(t *testing.T) {
+	tests := []struct {
+		name            string
+		flagValue       string
+		inputBaseBranch string
+		githubBaseRef   string
+		want            string
+	}{
+		{
+			name:            "falls back to GITHUB_BASE_REF when nothing else is set",
+			flagValue:       "",
+			inputBaseBranch: "",
+			githubBaseRef:   "master",
+			want:            "master",
+		},
+		{
+			name:            "INPUT_BASE_BRANCH wins over GITHUB_BASE_REF",
+			flagValue:       "",
+			inputBaseBranch: "develop",
+			githubBaseRef:   "master",
+			want:            "develop",
+		},
+		{
+			name:            "flag wins over GITHUB_BASE_REF",
+			flagValue:       "release",
+			inputBaseBranch: "",
+			githubBaseRef:   "master",
+			want:            "release",
+		},
+		{
+			name:            "INPUT_BASE_BRANCH wins over the flag",
+			flagValue:       "release",
+			inputBaseBranch: "develop",
+			githubBaseRef:   "master",
+			want:            "develop",
+		},
+		{
+			name:            "nothing resolved returns empty rather than a guessed main",
+			flagValue:       "",
+			inputBaseBranch: "",
+			githubBaseRef:   "",
+			want:            "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resolveBaseBranch(tt.flagValue, tt.inputBaseBranch, tt.githubBaseRef)
+			if got != tt.want {
+				t.Errorf("resolveBaseBranch(%q, %q, %q) = %q, want %q", tt.flagValue, tt.inputBaseBranch, tt.githubBaseRef, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestLoadBaseReport_NoReport(t *testing.T) {
 	// An empty path is the only case where (nil, nil) is correct: no base
 	// comparison was requested at all. Every other way loadBaseReport can

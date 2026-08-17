@@ -306,7 +306,11 @@ func formatCoverageDiffWithComparison(comp *coverage.Comparison, opts Options) s
 
 	baseBranch := opts.BaseBranch
 	if baseBranch == "" {
-		baseBranch = "main"
+		// Every source that could have supplied a real branch name --
+		// base-branch and GITHUB_BASE_REF alike -- came back empty, so this
+		// says so instead of inventing "main" for a repo whose default
+		// branch is something else (issue #75).
+		baseBranch = "BASE"
 	}
 	prRef := fmt.Sprintf("#%d", opts.PRNumber)
 	if opts.PRNumber == 0 {
