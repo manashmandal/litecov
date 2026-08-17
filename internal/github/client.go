@@ -247,31 +247,59 @@ func (c *Client) GetChangedFiles(prNumber int) ([]ChangedFile, error) {
 	return result, nil
 }
 
+const (
+	// commentsPerPage is the page size requested for FindExistingComment.
+	// GitHub's default is 30 comments/page, which without an explicit
+	// per_page dropped the marker comment off page one as soon as a PR
+	// picked up more comments than that (issue #36).
+	commentsPerPage = 100
+	// maxCommentsPages bounds pagination so an unusually long comment
+	// thread can't loop forever chasing "next" links.
+	maxCommentsPages = 100
+)
+
+// FindExistingComment returns the ID of the first comment on the PR whose
+// body starts with marker, walking every page of comments (issue #36).
+// GitHub returns comments oldest-first, 30/page by default; reading only
+// the first page meant the litecov comment fell out of view on any PR that
+// accumulated more comments than that, and every push after fell through to
+// CreateComment instead of updating the existing comment in place. Returns
+// 0 with a nil error when no page contains a match.
 func (c *Client) FindExistingComment(prNumber int, marker string) (int, error) {
-	path := fmt.Sprintf("/repos/%s/%s/issues/%d/comments", c.Owner, c.Repo, prNumber)
-	resp, err := c.doRequest("GET", path, nil)
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
+	path := fmt.Sprintf("/repos/%s/%s/issues/%d/comments?per_page=%d", c.Owner, c.Repo, prNumber, commentsPerPage)
 
-	if resp.StatusCode != http.StatusOK {
-		return 0, apiError(resp)
-	}
-
-	var comments []struct {
-		ID   int    `json:"id"`
-		Body string `json:"body"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&comments); err != nil {
-		return 0, err
-	}
-
-	for _, comment := range comments {
-		if strings.HasPrefix(comment.Body, marker) {
-			return comment.ID, nil
+	for page := 0; path != "" && page < maxCommentsPages; page++ {
+		resp, err := c.doRequest("GET", path, nil)
+		if err != nil {
+			return 0, err
 		}
+
+		if resp.StatusCode != http.StatusOK {
+			err := apiError(resp)
+			resp.Body.Close()
+			return 0, err
+		}
+
+		var comments []struct {
+			ID   int    `json:"id"`
+			Body string `json:"body"`
+		}
+		decodeErr := json.NewDecoder(resp.Body).Decode(&comments)
+		next := resp.Header.Get("Link")
+		resp.Body.Close()
+		if decodeErr != nil {
+			return 0, decodeErr
+		}
+
+		for _, comment := range comments {
+			if strings.HasPrefix(comment.Body, marker) {
+				return comment.ID, nil
+			}
+		}
+
+		path = nextPageLink(next)
 	}
+
 	return 0, nil
 }
 

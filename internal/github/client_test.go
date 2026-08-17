@@ -216,6 +216,11 @@ func TestNextPageLink(t *testing.T) {
 
 func TestClient_FindExistingComment(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// issue #36: per_page must be sent explicitly so a busy PR doesn't
+		// fall back to GitHub's 30-comment-per-page default.
+		if got := r.URL.Query().Get("per_page"); got != "100" {
+			t.Errorf("per_page = %q, want %q", got, "100")
+		}
 		comments := []struct {
 			ID   int    `json:"id"`
 			Body string `json:"body"`
@@ -268,6 +273,74 @@ func TestClient_FindExistingComment_NotFound(t *testing.T) {
 	}
 	if id != 0 {
 		t.Errorf("FindExistingComment() = %v, want 0", id)
+	}
+}
+
+// TestClient_FindExistingComment_Paginates covers issue #36's verified
+// repro: the comments endpoint returns comments oldest-first, 30 at a time
+// by default, and reading only the first page meant the litecov comment
+// fell out of view as soon as a PR accumulated more comments than that.
+// Past that point every push fell through to CreateComment instead of
+// updating the existing comment in place. FindExistingComment must now
+// request per_page=100 and follow the Link "next" header until it finds
+// the marker or GitHub stops sending a next page.
+func TestClient_FindExistingComment_Paginates(t *testing.T) {
+	const totalComments = 150
+	const perPage = 100
+	const markerIndex = totalComments - 1 // last comment, forcing page 2
+
+	var requests int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requests, 1)
+
+		if got := r.URL.Query().Get("per_page"); got != strconv.Itoa(perPage) {
+			t.Errorf("per_page = %q, want %q", got, strconv.Itoa(perPage))
+		}
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		if page == 0 {
+			page = 1
+		}
+
+		start := (page - 1) * perPage
+		end := start + perPage
+		if end > totalComments {
+			end = totalComments
+		}
+
+		comments := make([]struct {
+			ID   int    `json:"id"`
+			Body string `json:"body"`
+		}, 0, end-start)
+		for i := start; i < end; i++ {
+			body := fmt.Sprintf("comment %d", i)
+			if i == markerIndex {
+				body = "<!-- litecov -->\n## Coverage Report"
+			}
+			comments = append(comments, struct {
+				ID   int    `json:"id"`
+				Body string `json:"body"`
+			}{ID: i, Body: body})
+		}
+
+		if end < totalComments {
+			next := fmt.Sprintf("http://%s%s?page=%d&per_page=%d", r.Host, r.URL.Path, page+1, perPage)
+			w.Header().Set("Link", fmt.Sprintf(`<%s>; rel="next"`, next))
+		}
+		json.NewEncoder(w).Encode(comments)
+	}))
+	defer server.Close()
+
+	client := &Client{Token: "test-token", Owner: "owner", Repo: "repo", BaseURL: server.URL}
+
+	id, err := client.FindExistingComment(1, "<!-- litecov -->")
+	if err != nil {
+		t.Fatalf("FindExistingComment() error = %v", err)
+	}
+	if id != markerIndex {
+		t.Errorf("FindExistingComment() = %v, want %v (the marker comment on page 2)", id, markerIndex)
+	}
+	if got := atomic.LoadInt32(&requests); got != 2 {
+		t.Errorf("server received %d requests, want 2 (marker found on page 2, no need to request further)", got)
 	}
 }
 
