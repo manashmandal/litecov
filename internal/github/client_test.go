@@ -18,10 +18,14 @@ func TestClient_GetChangedFiles(t *testing.T) {
 		files := []struct {
 			Filename string `json:"filename"`
 			Status   string `json:"status"`
+			Patch    string `json:"patch,omitempty"`
 		}{
-			{Filename: "src/parser.go", Status: "modified"},
+			{Filename: "src/parser.go", Status: "modified", Patch: "@@ -1,3 +1,4 @@\n line1\n+line2\n line3"},
 			{Filename: "src/utils.go", Status: "added"},
 			{Filename: "src/legacy.go", Status: "removed"},
+			// A renamed-with-no-content-change file (and binary files, and
+			// diffs past GitHub's size limit) carries no "patch" key at all.
+			{Filename: "src/binary.png", Status: "modified"},
 		}
 		json.NewEncoder(w).Encode(files)
 	}))
@@ -39,8 +43,8 @@ func TestClient_GetChangedFiles(t *testing.T) {
 		t.Fatalf("GetChangedFiles() error = %v", err)
 	}
 
-	if len(files) != 3 {
-		t.Errorf("got %d files, want 3", len(files))
+	if len(files) != 4 {
+		t.Errorf("got %d files, want 4", len(files))
 	}
 	if files[0].Path != "src/parser.go" {
 		t.Errorf("files[0].Path = %v, want src/parser.go", files[0].Path)
@@ -50,6 +54,12 @@ func TestClient_GetChangedFiles(t *testing.T) {
 	}
 	if files[0].IsRemoved {
 		t.Error("files[0].IsRemoved should be false for status \"modified\"")
+	}
+	// issue #7: the per-file "patch" field carries the unified diff hunks and
+	// used to be discarded entirely, leaving nothing to feed the diff parser.
+	wantPatch := "@@ -1,3 +1,4 @@\n line1\n+line2\n line3"
+	if files[0].Patch != wantPatch {
+		t.Errorf("files[0].Patch = %q, want %q", files[0].Patch, wantPatch)
 	}
 	if !files[1].IsAdded {
 		t.Error("files[1].IsAdded should be true for status \"added\"")
@@ -65,6 +75,12 @@ func TestClient_GetChangedFiles(t *testing.T) {
 	}
 	if !files[2].IsRemoved {
 		t.Error("files[2].IsRemoved should be true for status \"removed\"")
+	}
+	// issue #7: GitHub omits "patch" for binary files, pure renames and
+	// diffs over its size limit. A missing key must decode to "" instead of
+	// an error, so callers can treat it as "no coverable changed lines".
+	if files[3].Patch != "" {
+		t.Errorf("files[3].Patch = %q, want empty string for a file with no patch key", files[3].Patch)
 	}
 }
 

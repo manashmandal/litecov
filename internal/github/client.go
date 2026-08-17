@@ -46,6 +46,12 @@ type ChangedFile struct {
 	Path      string
 	IsAdded   bool // True when GitHub reports this file's diff status as "added"
 	IsRemoved bool // True when GitHub reports this file's diff status as "removed"
+	// Patch holds the file's unified diff hunks exactly as GitHub returns
+	// them: starting at the first "@@" line, with no "diff --git"/"---"/"+++"
+	// header. It's empty for binary files, renames with no content change,
+	// and diffs past GitHub's per-file size limit -- callers should treat an
+	// empty Patch as "no coverable changed lines", not as an error.
+	Patch string
 }
 
 func (c *Client) GetChangedFiles(prNumber int) ([]ChangedFile, error) {
@@ -64,6 +70,7 @@ func (c *Client) GetChangedFiles(prNumber int) ([]ChangedFile, error) {
 	var files []struct {
 		Filename string `json:"filename"`
 		Status   string `json:"status"`
+		Patch    string `json:"patch"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&files); err != nil {
 		return nil, err
@@ -71,7 +78,12 @@ func (c *Client) GetChangedFiles(prNumber int) ([]ChangedFile, error) {
 
 	result := make([]ChangedFile, len(files))
 	for i, f := range files {
-		result[i] = ChangedFile{Path: f.Filename, IsAdded: f.Status == "added", IsRemoved: f.Status == "removed"}
+		result[i] = ChangedFile{
+			Path:      f.Filename,
+			IsAdded:   f.Status == "added",
+			IsRemoved: f.Status == "removed",
+			Patch:     f.Patch,
+		}
 	}
 	return result, nil
 }
