@@ -11,6 +11,9 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      major: ${{ steps.version.outputs.major }}
     steps:
       - uses: actions/checkout@v4
 
@@ -50,3 +53,32 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git tag -f ${{ steps.version.outputs.major }}
           git push origin ${{ steps.version.outputs.major }} --force
+
+  publish-image:
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ghcr.io/manashmandal/litecov:${{ needs.release.outputs.tag }}
+            ghcr.io/manashmandal/litecov:${{ needs.release.outputs.major }}

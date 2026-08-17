@@ -1,0 +1,25 @@
+# The Dockerfile only needs go.mod/go.sum, cmd/, and internal/ to build the
+# litecov binary. Everything below is either documentation, VCS history, or
+# test-only and would otherwise bloat the build context on every consumer run.
+
+.git/
+.github/
+docs/
+testdata/
+logo.png
+*_test.go
+
+*.md
+LICENSE
+
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+coverage.out
+coverage.lcov
+coverage.xml
+dist/
+litecov
+litecov-test*
