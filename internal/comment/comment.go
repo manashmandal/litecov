@@ -327,11 +327,15 @@ func formatCoverageDiffWithComparison(comp *coverage.Comparison, opts Options) s
 
 // formatIntDelta renders an exact integer delta (Files, Lines, Hits, Misses
 // counts, which have no display-precision rounding to worry about) with a
-// leading sign, except at 0: printing "+0" for a row that didn't change
-// reads as a change that happened (issue #38).
+// leading sign, except at 0: it returns "" so the caller's %5s verb pads
+// the cell with spaces instead of printing a placeholder. Codecov's own
+// diff block leaves an unmoved row's cell blank rather than a "0" that
+// reads as a measurement (issue #55); a bare digit was itself an
+// improvement over the "+0" this replaced, which read as a change that
+// happened (issue #38).
 func formatIntDelta(n int) string {
 	if n == 0 {
-		return "0"
+		return ""
 	}
 	return fmt.Sprintf("%+d", n)
 }

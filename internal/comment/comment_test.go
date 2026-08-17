@@ -1819,6 +1819,48 @@ func TestFormatCoverageDiffWithComparison(t *testing.T) {
 			t.Error("an exactly-zero coverage delta should render as ø")
 		}
 	})
+
+	t.Run("unchanged Files count renders blank even when Lines changes", func(t *testing.T) {
+		// issue #55: real Codecov output leaves an unmoved row's delta cell
+		// blank instead of printing a placeholder digit. Files stays flat at
+		// 1336 while Lines moves by 3 -- the moto-scale evidence from the
+		// issue -- so the Files row must render blank on its own, not
+		// borrow a "0" (or a "+") from the fact that a neighboring row
+		// changed.
+		comp := &coverage.Comparison{
+			Head: &coverage.Report{
+				TotalCovered: 121830,
+				TotalLines:   121830,
+				Coverage:     100.0,
+				Files:        make([]coverage.FileCoverage, 1336),
+			},
+			Base: &coverage.Report{
+				TotalCovered: 121827,
+				TotalLines:   121827,
+				Coverage:     100.0,
+				Files:        make([]coverage.FileCoverage, 1336),
+			},
+		}
+
+		result := formatCoverageDiffWithComparison(comp, Options{})
+
+		var filesLine, linesLine string
+		for _, line := range strings.Split(result, "\n") {
+			switch {
+			case strings.Contains(line, "Files"):
+				filesLine = line
+			case strings.Contains(line, "Lines"):
+				linesLine = line
+			}
+		}
+
+		if trimmed := strings.TrimRight(filesLine, " "); !strings.HasSuffix(trimmed, "1336") {
+			t.Errorf("unchanged Files count should render a blank delta cell, got %q", filesLine)
+		}
+		if !strings.Contains(linesLine, "+3") {
+			t.Errorf("a real Lines change should still render its delta, got %q", linesLine)
+		}
+	})
 }
 
 func TestFormatImpactedFilesWithDelta(t *testing.T) {
