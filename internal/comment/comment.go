@@ -124,7 +124,10 @@ func formatQuickSummary(report *coverage.Report) string {
 
 func formatQuickSummaryWithDelta(comp *coverage.Comparison) string {
 	emoji := getStatusEmoji(comp.Head.Coverage)
-	delta := formatDeltaString(comp.CoverageDelta, comp.Base != nil)
+	// A present-but-empty base report leaves nothing to diff against, same
+	// as no base report at all: showing CoverageDelta here would claim an
+	// improvement over a measurement that was never taken (issue #32).
+	delta := formatDeltaString(comp.CoverageDelta, comp.Base != nil && !comp.NoBaseFiles)
 	return fmt.Sprintf("> %s **Coverage:** `%.2f%%`%s | **Lines:** `%d/%d` | **Files:** `%d`\n\n",
 		emoji, comp.Head.Coverage, delta, comp.Head.TotalCovered, comp.Head.TotalLines, len(comp.Head.Files))
 }
@@ -180,7 +183,11 @@ func formatCoverageDiffWithComparison(comp *coverage.Comparison, opts Options) s
 	sb.WriteString(fmt.Sprintf("##           %8s   %8s     +/-   ##\n", baseBranch, prRef))
 	sb.WriteString("=============================================\n")
 
-	if comp.Base != nil {
+	// A present-but-empty base report (NoBaseFiles) is treated the same as
+	// no base report at all: falling into the single-column branch below
+	// avoids presenting comp.Base.Coverage's 0 fallback as a real
+	// measurement (issue #32).
+	if comp.Base != nil && !comp.NoBaseFiles {
 		coverageDiff := comp.Head.Coverage - comp.Base.Coverage
 		prefix := " "
 		if coverageDiff > 0 {
@@ -196,7 +203,7 @@ func formatCoverageDiffWithComparison(comp *coverage.Comparison, opts Options) s
 
 	sb.WriteString("=============================================\n")
 
-	if comp.Base != nil {
+	if comp.Base != nil && !comp.NoBaseFiles {
 		filesDiff := len(comp.Head.Files) - len(comp.Base.Files)
 		sb.WriteString(fmt.Sprintf("  Files           %4d      %4d   %+5d\n",
 			len(comp.Base.Files), len(comp.Head.Files), filesDiff))
@@ -211,7 +218,7 @@ func formatCoverageDiffWithComparison(comp *coverage.Comparison, opts Options) s
 
 	sb.WriteString("=============================================\n")
 
-	if comp.Base != nil {
+	if comp.Base != nil && !comp.NoBaseFiles {
 		hitsDiff := comp.Head.Hits() - comp.Base.Hits()
 		hitsPrefix := " "
 		if hitsDiff > 0 {
@@ -343,6 +350,12 @@ func formatFileDelta(fc coverage.FileChange) string {
 	}
 	if fc.IsNew {
 		return "`new`"
+	}
+	if fc.NoBaseData {
+		// No base entry, and the PR diff didn't call this file added
+		// either: the prior measurement is unknown, not a delta from 0%
+		// (issue #32).
+		return "`unknown`"
 	}
 	if fc.Delta == 0 {
 		return "`ø`"

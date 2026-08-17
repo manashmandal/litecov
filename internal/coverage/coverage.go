@@ -52,6 +52,13 @@ type Comparison struct {
 	Base          *Report
 	CoverageDelta float64
 	FileChanges   []FileChange
+	// NoBaseFiles is true when Base is non-nil but parsed to zero files (a
+	// truncated LCOV, a Cobertura with no packages). CoverageDelta is left
+	// unset in that case: Base.Coverage falls back to 0 the same way a
+	// single file's Percentage() does for LinesTotal == 0, and computing
+	// head.Coverage - 0 would report every point of head coverage as
+	// improvement over a base that was never actually measured (issue #32).
+	NoBaseFiles bool
 }
 
 // FileChange represents coverage change for a single file
@@ -60,14 +67,29 @@ type FileChange struct {
 	HeadCoverage float64
 	BaseCoverage float64
 	Delta        float64
+	// IsNew is true when GitHub's PR diff reports this file's status as
+	// "added". It comes from the diff, not from the file's absence in the
+	// base coverage report: a file can be missing from the base report
+	// because the base run was partial, crashed, or excluded the file, none
+	// of which mean the PR added it (issue #32).
 	IsNew        bool
 	NoCoverage   bool // True if the file is absent from the coverage report entirely: coverage is unknown, not 0%
 	NoStatements bool // True if the file has no coverable lines (LinesTotal == 0): coverage is undefined, not 0%
+	// NoBaseData is true when there is no entry for this file in the base
+	// report, whether because base is nil, because the base report has no
+	// files, or because this path just never matched one. BaseCoverage and
+	// Delta stay at their zero-value sentinel in that case: computing
+	// HeadCoverage - 0 would describe an unmeasured base as if it were a
+	// real 0% (issue #32).
+	NoBaseData bool
 }
 
-// NewComparison creates a comparison between head and base reports
-// changedFiles is optional list of file paths that changed in the PR
-func NewComparison(head, base *Report, changedFiles []string) *Comparison {
+// NewComparison creates a comparison between head and base reports.
+// changedFiles is an optional list of file paths that changed in the PR.
+// addedFiles is an optional set of paths that GitHub's PR diff reports as
+// newly added, used for IsNew (see its doc comment for why that isn't
+// inferred from base-report absence).
+func NewComparison(head, base *Report, changedFiles []string, addedFiles map[string]bool) *Comparison {
 	if head == nil {
 		return &Comparison{}
 	}
@@ -78,7 +100,17 @@ func NewComparison(head, base *Report, changedFiles []string) *Comparison {
 	}
 
 	if base != nil {
-		comp.CoverageDelta = head.Coverage - base.Coverage
+		if len(base.Files) > 0 {
+			comp.CoverageDelta = head.Coverage - base.Coverage
+		} else {
+			// A present-but-empty base report (a truncated LCOV, a
+			// Cobertura with no packages) parses to zero files, and
+			// base.Coverage falls back to 0 the same way Percentage() does
+			// for a single file with LinesTotal == 0. head.Coverage - 0
+			// would report every point of head coverage as improvement over
+			// a base that was never actually measured (issue #32).
+			comp.NoBaseFiles = true
+		}
 	}
 
 	baseFileMap := make(map[string]*FileCoverage)
@@ -126,17 +158,20 @@ func NewComparison(head, base *Report, changedFiles []string) *Comparison {
 			// this is what lets the comparison table tell "nothing to
 			// measure" apart from "measured, nothing covered" (issue #35).
 			NoStatements: headFile.LinesTotal == 0,
+			IsNew:        addedFiles[filePath],
 		}
 
 		if baseFile, exists := baseFileMap[headFile.Path]; exists {
 			fc.BaseCoverage = baseFile.Percentage()
-			fc.IsNew = false
+			fc.Delta = fc.HeadCoverage - fc.BaseCoverage
 		} else {
-			fc.BaseCoverage = 0
-			fc.IsNew = true
+			// No base entry for this path: BaseCoverage and Delta stay at
+			// their zero-value sentinel rather than computing HeadCoverage -
+			// 0, which would assert a measurement that was never taken
+			// (issue #32).
+			fc.NoBaseData = true
 		}
 
-		fc.Delta = fc.HeadCoverage - fc.BaseCoverage
 		comp.FileChanges = append(comp.FileChanges, fc)
 	}
 
@@ -158,14 +193,15 @@ func NewComparison(head, base *Report, changedFiles []string) *Comparison {
 				HeadCoverage: 0,
 				BaseCoverage: 0,
 				Delta:        0,
-				IsNew:        true,
+				IsNew:        addedFiles[changedFile],
 				NoCoverage:   true,
 			}
 			// Check if file existed in base
 			if baseFile := findFileInReport(base, changedFile); baseFile != nil {
 				fc.BaseCoverage = baseFile.Percentage()
 				fc.Delta = -fc.BaseCoverage
-				fc.IsNew = false
+			} else {
+				fc.NoBaseData = true
 			}
 			comp.FileChanges = append(comp.FileChanges, fc)
 		}

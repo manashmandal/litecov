@@ -17,9 +17,10 @@ func TestClient_GetChangedFiles(t *testing.T) {
 		}
 		files := []struct {
 			Filename string `json:"filename"`
+			Status   string `json:"status"`
 		}{
-			{Filename: "src/parser.go"},
-			{Filename: "src/utils.go"},
+			{Filename: "src/parser.go", Status: "modified"},
+			{Filename: "src/utils.go", Status: "added"},
 		}
 		json.NewEncoder(w).Encode(files)
 	}))
@@ -40,8 +41,14 @@ func TestClient_GetChangedFiles(t *testing.T) {
 	if len(files) != 2 {
 		t.Errorf("got %d files, want 2", len(files))
 	}
-	if files[0] != "src/parser.go" {
-		t.Errorf("files[0] = %v, want src/parser.go", files[0])
+	if files[0].Path != "src/parser.go" {
+		t.Errorf("files[0].Path = %v, want src/parser.go", files[0].Path)
+	}
+	if files[0].IsAdded {
+		t.Error("files[0].IsAdded should be false for status \"modified\"")
+	}
+	if !files[1].IsAdded {
+		t.Error("files[1].IsAdded should be true for status \"added\"")
 	}
 }
 

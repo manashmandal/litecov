@@ -883,7 +883,7 @@ func TestFormatWithComparison(t *testing.T) {
 		Coverage:     75.0,
 	}
 
-	comp := coverage.NewComparison(head, base, nil)
+	comp := coverage.NewComparison(head, base, nil, nil)
 	opts := Options{
 		Title:      "PR Coverage",
 		PRNumber:   123,
@@ -936,7 +936,7 @@ func TestFormatWithComparison_NoBase(t *testing.T) {
 		Coverage:     80.0,
 	}
 
-	comp := coverage.NewComparison(head, nil, nil)
+	comp := coverage.NewComparison(head, nil, nil, nil)
 	opts := Options{
 		Title: "Coverage",
 	}
@@ -948,6 +948,37 @@ func TestFormatWithComparison_NoBase(t *testing.T) {
 	}
 	if strings.Contains(result, "(+") || strings.Contains(result, "(-") {
 		t.Error("should not show delta when no base")
+	}
+}
+
+func TestFormatWithComparison_EmptyBase(t *testing.T) {
+	// Reproduces the issue #32 repro: an empty-but-present base report must
+	// not render as if every point of head coverage were an improvement
+	// over a real 0% base.
+	head := &coverage.Report{
+		Files: []coverage.FileCoverage{
+			{Path: "a.go", LinesCovered: 90, LinesTotal: 100},
+			{Path: "b.go", LinesCovered: 80, LinesTotal: 100},
+		},
+		TotalCovered: 170,
+		TotalLines:   200,
+		Coverage:     85.0,
+	}
+	base := &coverage.Report{
+		Files:    []coverage.FileCoverage{},
+		Coverage: 0,
+	}
+
+	comp := coverage.NewComparison(head, base, nil, nil)
+	opts := Options{Title: "Coverage"}
+
+	result := FormatWithComparison(comp, opts)
+
+	if !strings.Contains(result, "85.00%") {
+		t.Error("missing head coverage percentage")
+	}
+	if strings.Contains(result, "+85.00%") {
+		t.Error("should not report head coverage as an 85-point improvement over an empty base report")
 	}
 }
 
@@ -1020,6 +1051,24 @@ func TestFormatQuickSummaryWithDelta(t *testing.T) {
 				CoverageDelta: 0,
 			},
 			contains: []string{"80.00%"},
+			excludes: []string{"(+", "(-"},
+		},
+		{
+			// issue #32: a present-but-empty base report must render like
+			// no base at all, not like a real 0% measurement.
+			name: "empty base report",
+			comp: &coverage.Comparison{
+				Head: &coverage.Report{
+					TotalCovered: 85,
+					TotalLines:   100,
+					Coverage:     85.0,
+					Files:        make([]coverage.FileCoverage, 5),
+				},
+				Base:          &coverage.Report{Coverage: 0, Files: []coverage.FileCoverage{}},
+				NoBaseFiles:   true,
+				CoverageDelta: 0,
+			},
+			contains: []string{"85.00%"},
 			excludes: []string{"(+", "(-"},
 		},
 	}
@@ -1107,6 +1156,33 @@ func TestFormatCoverageDiffWithComparison(t *testing.T) {
 		}
 		if !strings.Contains(result, "main") {
 			t.Error("should default to main branch")
+		}
+	})
+
+	t.Run("empty base", func(t *testing.T) {
+		// issue #32: a base report present but with zero files must render
+		// the same single-column format as no base at all, not a diff
+		// against a fabricated 0% base.
+		comp := &coverage.Comparison{
+			Head: &coverage.Report{
+				TotalCovered: 170,
+				TotalLines:   200,
+				Coverage:     85.0,
+				Files:        make([]coverage.FileCoverage, 2),
+			},
+			Base:        &coverage.Report{Coverage: 0, Files: []coverage.FileCoverage{}},
+			NoBaseFiles: true,
+		}
+
+		opts := Options{}
+
+		result := formatCoverageDiffWithComparison(comp, opts)
+
+		if !strings.Contains(result, "85.00%") {
+			t.Error("missing head coverage")
+		}
+		if strings.Contains(result, "+85.00%") {
+			t.Error("should not render the empty base as a real 0% measurement")
 		}
 	})
 }
@@ -1237,6 +1313,14 @@ func TestFormatFileDelta(t *testing.T) {
 			// zero, and takes priority over IsNew.
 			name:     "no coverage data",
 			fc:       coverage.FileChange{IsNew: true, NoCoverage: true, Delta: 0},
+			expected: "`unknown`",
+		},
+		{
+			// issue #32: no base entry, and the PR diff didn't call this
+			// file added either. The prior measurement is unknown, not a
+			// delta from 0%.
+			name:     "no base data",
+			fc:       coverage.FileChange{IsNew: false, NoBaseData: true, Delta: 0},
 			expected: "`unknown`",
 		},
 	}

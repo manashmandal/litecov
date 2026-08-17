@@ -142,7 +142,7 @@ func TestReport_HitsAndMisses_Zero(t *testing.T) {
 }
 
 func TestNewComparison_NilHead(t *testing.T) {
-	comp := NewComparison(nil, nil, nil)
+	comp := NewComparison(nil, nil, nil, nil)
 
 	if comp.Head != nil {
 		t.Errorf("Head = %v, want nil", comp.Head)
@@ -163,7 +163,7 @@ func TestNewComparison_NilBase(t *testing.T) {
 		Coverage: 80.0,
 	}
 
-	comp := NewComparison(head, nil, nil)
+	comp := NewComparison(head, nil, nil, nil)
 
 	if comp.Head != head {
 		t.Error("Head should match provided report")
@@ -177,8 +177,14 @@ func TestNewComparison_NilBase(t *testing.T) {
 	if len(comp.FileChanges) != 1 {
 		t.Errorf("FileChanges length = %v, want 1", len(comp.FileChanges))
 	}
-	if !comp.FileChanges[0].IsNew {
-		t.Error("File should be marked as new when no base")
+	// No PR diff status was supplied (addedFiles is nil), so IsNew must stay
+	// false: a missing base report means the base measurement is unknown,
+	// not that the file was added by this PR (issue #32).
+	if comp.FileChanges[0].IsNew {
+		t.Error("File should not be marked new without PR diff status, even with no base report")
+	}
+	if !comp.FileChanges[0].NoBaseData {
+		t.Error("File should be marked NoBaseData when there is no base report")
 	}
 }
 
@@ -197,7 +203,7 @@ func TestNewComparison_WithBase(t *testing.T) {
 		Coverage: 80.0,
 	}
 
-	comp := NewComparison(head, base, nil)
+	comp := NewComparison(head, base, nil, nil)
 
 	if comp.CoverageDelta != -10.0 {
 		t.Errorf("CoverageDelta = %v, want -10.0", comp.CoverageDelta)
@@ -227,11 +233,19 @@ func TestNewComparison_WithBase(t *testing.T) {
 	if bChange.Path != "b.go" {
 		t.Errorf("FileChanges[1].Path = %v, want b.go", bChange.Path)
 	}
-	if !bChange.IsNew {
-		t.Error("FileChanges[1].IsNew should be true (new file)")
+	// No addedFiles info was supplied, so IsNew stays false: b.go's absence
+	// from base is unknown, not asserted as "added by this PR" (issue #32).
+	if bChange.IsNew {
+		t.Error("FileChanges[1].IsNew should be false without PR diff status")
+	}
+	if !bChange.NoBaseData {
+		t.Error("FileChanges[1].NoBaseData should be true: b.go has no base entry")
 	}
 	if bChange.BaseCoverage != 0 {
 		t.Errorf("FileChanges[1].BaseCoverage = %v, want 0", bChange.BaseCoverage)
+	}
+	if bChange.Delta != 0 {
+		t.Errorf("FileChanges[1].Delta = %v, want 0 (sentinel, not HeadCoverage - 0)", bChange.Delta)
 	}
 }
 
@@ -248,7 +262,7 @@ func TestNewComparison_NoStatements(t *testing.T) {
 		Coverage: 100.0,
 	}
 
-	comp := NewComparison(head, nil, nil)
+	comp := NewComparison(head, nil, nil, nil)
 
 	if len(comp.FileChanges) != 2 {
 		t.Fatalf("FileChanges length = %v, want 2", len(comp.FileChanges))
@@ -290,7 +304,7 @@ func TestNewComparison_WithChangedFiles(t *testing.T) {
 	}
 
 	changedFiles := []string{"a.go", "b.go"}
-	comp := NewComparison(head, base, changedFiles)
+	comp := NewComparison(head, base, changedFiles, nil)
 
 	if len(comp.FileChanges) != 2 {
 		t.Errorf("FileChanges length = %v, want 2", len(comp.FileChanges))
@@ -312,7 +326,7 @@ func TestNewComparison_EmptyChangedFiles(t *testing.T) {
 		Coverage: 70.0,
 	}
 
-	comp := NewComparison(head, nil, []string{})
+	comp := NewComparison(head, nil, []string{}, nil)
 
 	if len(comp.FileChanges) != 2 {
 		t.Errorf("FileChanges length = %v, want 2 (empty changedFiles means all files)", len(comp.FileChanges))
@@ -356,7 +370,7 @@ func TestNewComparison_MissingFiles(t *testing.T) {
 
 	// Changed files include files not in the coverage report
 	changedFiles := []string{"internal/foo/a.go", "cmd/app/main.go", "internal/bar/b.go"}
-	comp := NewComparison(head, nil, changedFiles)
+	comp := NewComparison(head, nil, changedFiles, nil)
 
 	// Should have 3 file changes: 1 covered + 2 missing
 	if len(comp.FileChanges) != 3 {
@@ -386,7 +400,7 @@ func TestNewComparison_MissingFiles_SkipsTestFiles(t *testing.T) {
 
 	// Changed files include test files which should be skipped
 	changedFiles := []string{"internal/foo/a.go", "internal/foo/a_test.go", "cmd/app/main_test.go"}
-	comp := NewComparison(head, nil, changedFiles)
+	comp := NewComparison(head, nil, changedFiles, nil)
 
 	// Should only have 1 file change (test files are skipped)
 	if len(comp.FileChanges) != 1 {
@@ -394,5 +408,71 @@ func TestNewComparison_MissingFiles_SkipsTestFiles(t *testing.T) {
 	}
 	if comp.FileChanges[0].Path != "internal/foo/a.go" {
 		t.Errorf("FileChanges[0].Path = %v, want internal/foo/a.go", comp.FileChanges[0].Path)
+	}
+}
+
+func TestNewComparison_IsNewFromAddedFiles(t *testing.T) {
+	// Core of issue #32: a file missing from the base report is not
+	// necessarily added by this PR. It can be missing because the base run
+	// was partial, crashed, or excluded it. IsNew must come from the PR
+	// diff's own status (addedFiles), not from base-report absence.
+	head := &Report{
+		Files: []FileCoverage{
+			{Path: "added.go", LinesCovered: 40, LinesTotal: 50},
+			{Path: "orphaned.go", LinesCovered: 30, LinesTotal: 50},
+		},
+		Coverage: 70.0,
+	}
+
+	addedFiles := map[string]bool{"added.go": true}
+
+	comp := NewComparison(head, nil, nil, addedFiles)
+
+	var addedChange, orphanedChange FileChange
+	for _, fc := range comp.FileChanges {
+		switch fc.Path {
+		case "added.go":
+			addedChange = fc
+		case "orphaned.go":
+			orphanedChange = fc
+		}
+	}
+
+	if !addedChange.IsNew {
+		t.Error("added.go should be IsNew: the PR diff reports it as added")
+	}
+	if orphanedChange.IsNew {
+		t.Error("orphaned.go should not be IsNew: the PR diff does not report it as added, even though there is no base report for it")
+	}
+	if !orphanedChange.NoBaseData {
+		t.Error("orphaned.go should be NoBaseData: there is no base report at all")
+	}
+}
+
+func TestNewComparison_EmptyBaseReport(t *testing.T) {
+	// Reproduces the issue #32 repro: a base report that parses cleanly but
+	// to zero files (a truncated LCOV, a Cobertura with no packages) must
+	// not be treated as "base coverage is 0%". head.Coverage - 0 would
+	// report every point of head coverage as improvement over a
+	// measurement that was never taken.
+	head := &Report{
+		Files: []FileCoverage{
+			{Path: "a.go", LinesCovered: 90, LinesTotal: 100},
+			{Path: "b.go", LinesCovered: 80, LinesTotal: 100},
+		},
+		Coverage: 85.0,
+	}
+	base := &Report{
+		Files:    []FileCoverage{},
+		Coverage: 0,
+	}
+
+	comp := NewComparison(head, base, nil, nil)
+
+	if !comp.NoBaseFiles {
+		t.Error("NoBaseFiles should be true when the base report has zero files")
+	}
+	if comp.CoverageDelta != 0 {
+		t.Errorf("CoverageDelta = %v, want 0 (not head.Coverage - 0)", comp.CoverageDelta)
 	}
 }

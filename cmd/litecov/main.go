@@ -129,8 +129,10 @@ func main() {
 	gh := github.NewClient(token, owner, repo)
 
 	var changedFiles []string
+	var addedFiles map[string]bool
 	if *showFiles == "changed" && prNumber > 0 {
-		changedFiles, err = gh.GetChangedFiles(prNumber)
+		var changed []github.ChangedFile
+		changed, err = gh.GetChangedFiles(prNumber)
 		if err != nil {
 			// A missing pull-requests: read permission, a rate limit, or a
 			// fork PR with a restricted token all land here. Continuing with
@@ -144,9 +146,16 @@ func main() {
 		}
 		// GitHub's changed-file paths are already clean, but normalize them
 		// too so both sides of every later comparison went through the
-		// same rules (issue #19).
-		for i, cf := range changedFiles {
-			changedFiles[i] = paths.NormalizeCoveragePath(cf)
+		// same rules (issue #19). addedFiles is keyed the same way so
+		// NewComparison's IsNew lookups line up (issue #32).
+		changedFiles = make([]string, len(changed))
+		addedFiles = make(map[string]bool, len(changed))
+		for i, cf := range changed {
+			normalized := paths.NormalizeCoveragePath(cf.Path)
+			changedFiles[i] = normalized
+			if cf.IsAdded {
+				addedFiles[normalized] = true
+			}
 		}
 	}
 
@@ -181,7 +190,7 @@ func main() {
 	// Generate comment with or without comparison
 	var commentBody string
 	if baseReport != nil {
-		comp := coverage.NewComparison(report, baseReport, changedFiles)
+		comp := coverage.NewComparison(report, baseReport, changedFiles, addedFiles)
 		commentBody = comment.FormatWithComparison(comp, opts)
 	} else {
 		commentBody = comment.Format(report, opts)

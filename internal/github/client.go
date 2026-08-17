@@ -41,7 +41,13 @@ func (c *Client) doRequest(method, path string, body io.Reader) (*http.Response,
 	return http.DefaultClient.Do(req)
 }
 
-func (c *Client) GetChangedFiles(prNumber int) ([]string, error) {
+// ChangedFile is one entry from a pull request's file diff.
+type ChangedFile struct {
+	Path    string
+	IsAdded bool // True when GitHub reports this file's diff status as "added"
+}
+
+func (c *Client) GetChangedFiles(prNumber int) ([]ChangedFile, error) {
 	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/files", c.Owner, c.Repo, prNumber)
 	resp, err := c.doRequest("GET", path, nil)
 	if err != nil {
@@ -56,14 +62,15 @@ func (c *Client) GetChangedFiles(prNumber int) ([]string, error) {
 
 	var files []struct {
 		Filename string `json:"filename"`
+		Status   string `json:"status"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&files); err != nil {
 		return nil, err
 	}
 
-	result := make([]string, len(files))
+	result := make([]ChangedFile, len(files))
 	for i, f := range files {
-		result[i] = f.Filename
+		result[i] = ChangedFile{Path: f.Filename, IsAdded: f.Status == "added"}
 	}
 	return result, nil
 }
