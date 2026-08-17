@@ -1140,7 +1140,10 @@ func filterFiles(files []coverage.FileCoverage, opts Options) []coverage.FileCov
 		sort.Slice(measured, func(i, j int) bool {
 			return measured[i].Percentage() < measured[j].Percentage()
 		})
-		if opts.WorstN > len(measured) {
+		// A zero or negative WorstN reaching this slice bound used to panic
+		// instead of degrading to "show everything measured" the way an
+		// out-of-range positive N already does (issue #84).
+		if opts.WorstN <= 0 || opts.WorstN > len(measured) {
 			return measured
 		}
 		return measured[:opts.WorstN]

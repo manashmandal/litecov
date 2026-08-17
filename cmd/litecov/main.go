@@ -227,7 +227,14 @@ func main() {
 		opts.Threshold = val
 	}
 	if strings.HasPrefix(*showFiles, "worst:") {
-		val, _ := strconv.Atoi(strings.TrimPrefix(*showFiles, "worst:"))
+		// A discarded parse error let a non-numeric or negative N reach
+		// filterFiles as a raw slice bound, panicking instead of failing
+		// cleanly (issue #84).
+		val, err := strconv.Atoi(strings.TrimPrefix(*showFiles, "worst:"))
+		if err != nil || val <= 0 {
+			fmt.Fprintf(os.Stderr, "Invalid show-files value %q: worst:N requires a positive integer\n", *showFiles)
+			os.Exit(1)
+		}
 		opts.WorstN = val
 	}
 

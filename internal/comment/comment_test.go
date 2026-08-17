@@ -497,6 +497,28 @@ func TestFormat_WorstMoreThanFiles(t *testing.T) {
 	}
 }
 
+func TestFormat_WorstNegative(t *testing.T) {
+	// A negative WorstN used to reach the sorted[:opts.WorstN] slice
+	// expression directly and panic with "slice bounds out of range"
+	// instead of degrading gracefully (issue #84).
+	report := &coverage.Report{
+		Files: []coverage.FileCoverage{
+			{Path: "src/good.go", LinesCovered: 95, LinesTotal: 100},
+			{Path: "src/bad.go", LinesCovered: 40, LinesTotal: 100},
+		},
+		TotalCovered: 135,
+		TotalLines:   200,
+		Coverage:     67.5,
+	}
+
+	opts := Options{ShowFiles: "worst:-1", WorstN: -1}
+	result := Format(report, opts)
+
+	if !strings.Contains(result, "src/good.go") || !strings.Contains(result, "src/bad.go") {
+		t.Error("a negative WorstN should fall back to showing every measured file, not panic")
+	}
+}
+
 func TestFormat_DefaultFilter(t *testing.T) {
 	report := &coverage.Report{
 		Files: []coverage.FileCoverage{
