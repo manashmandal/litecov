@@ -1081,6 +1081,114 @@ func TestFormatFileName_NormalizesAndEscapesPath(t *testing.T) {
 	}
 }
 
+// TestFormatFileName_EscapesPipeAndBacktick reproduces issue #27: a '|' in a
+// path ends a table cell early, splitting the row and pushing the later
+// columns out of the table, and a backtick closes the code span early,
+// dumping the rest of the link as literal text. Both the escaped output
+// below and the pre-fix breakage it replaces were verified against GitHub's
+// own GFM renderer (POST /markdown, mode: gfm).
+func TestFormatFileName_EscapesPipeAndBacktick(t *testing.T) {
+	opts := Options{RepoURL: "https://github.com/user/repo", SHA: "abc123"}
+
+	tests := []struct {
+		name     string
+		path     string
+		opts     Options
+		expected string
+	}{
+		{
+			name:     "pipe is backslash-escaped so it can't end the cell early",
+			path:     "src/foo|bar.go",
+			opts:     opts,
+			expected: "[`src/foo\\|bar.go`](https://github.com/user/repo/blob/abc123/src/foo%7Cbar.go)",
+		},
+		{
+			name:     "single backtick widens the fence to double backtick",
+			path:     "src/we`ird.go",
+			opts:     opts,
+			expected: "[``src/we`ird.go``](https://github.com/user/repo/blob/abc123/src/we%60ird.go)",
+		},
+		{
+			name:     "pipe and backtick together",
+			path:     "src/foo|ba`r.go",
+			opts:     opts,
+			expected: "[``src/foo\\|ba`r.go``](https://github.com/user/repo/blob/abc123/src/foo%7Cba%60r.go)",
+		},
+		{
+			name:     "backtick is still fence-widened without a link",
+			path:     "src/we`ird.go",
+			opts:     Options{},
+			expected: "``src/we`ird.go``",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := formatFileName(tt.path, tt.opts)
+			if got != tt.expected {
+				t.Errorf("formatFileName(%q) = %q, want %q", tt.path, got, tt.expected)
+			}
+		})
+	}
+}
+
+// TestFormatImpactedFiles_PipeInPathDoesNotBreakRow reproduces issue #27 at
+// the table-row level: the raw markdown formatImpactedFiles writes for a
+// file whose path contains '|' must keep exactly the five unescaped pipes a
+// four-column row needs (one to open, three separators, one to close), not
+// extra ones that shift Uncovered Lines and Status out of the table.
+func TestFormatImpactedFiles_PipeInPathDoesNotBreakRow(t *testing.T) {
+	files := []coverage.FileCoverage{
+		{Path: "src/foo|bar.go", LinesCovered: 50, LinesTotal: 100},
+	}
+
+	result := formatImpactedFiles(files, Options{})
+
+	var row string
+	for _, line := range strings.Split(result, "\n") {
+		if strings.Contains(line, "foo") {
+			row = line
+			break
+		}
+	}
+	if row == "" {
+		t.Fatalf("could not find the file's row in %q", result)
+	}
+
+	unescaped := strings.Count(strings.ReplaceAll(row, "\\|", ""), "|")
+	if unescaped != 5 {
+		t.Errorf("row has %d unescaped pipes, want 5 (four columns): %q", unescaped, row)
+	}
+}
+
+// TestCodeSpan covers the backtick-fence-widening rule directly: a code
+// span's fence must be one backtick wider than the longest backtick run in
+// its content (CommonMark code spans), and content starting or ending with
+// a backtick needs a padding space on each side so that backtick doesn't
+// fuse with the fence into one longer run.
+func TestCodeSpan(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{"no backtick", "plain.go", "`plain.go`"},
+		{"one backtick in the middle", "src/we`ird.go", "``src/we`ird.go``"},
+		{"two consecutive backticks widen the fence to three", "a``b", "```a``b```"},
+		{"leading backtick is padded", "`leading.go", "`` `leading.go ``"},
+		{"trailing backtick is padded", "trailing.go`", "`` trailing.go` ``"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := codeSpan(tt.content)
+			if got != tt.want {
+				t.Errorf("codeSpan(%q) = %q, want %q", tt.content, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestFormatFooter(t *testing.T) {
 	result := formatFooter()
 

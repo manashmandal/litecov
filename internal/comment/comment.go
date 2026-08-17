@@ -510,12 +510,54 @@ func formatFileDelta(fc coverage.FileChange) string {
 // since a Go coverage profile carries the module prefix and a coverage.py
 // report carries the CI's absolute checkout path, neither of which line up
 // with a github.com/<owner>/<repo>/blob/<sha>/<path> URL as-is (issue #18).
+// The displayed path is escaped for the table cell it lands in: GitHub
+// splits a row into cells on any unescaped '|' before it parses inline
+// markup, so a pipe in the path still breaks the row even from inside a
+// code span, and a backtick in the path needs a wider fence than the
+// default single backtick or it closes the span early and dumps the rest
+// of the link as literal text (issue #27).
 func formatFileName(path string, opts Options) string {
 	displayPath := paths.NormalizePathForAnnotation(path)
+	span := codeSpan(escapeTablePipes(displayPath))
 	if opts.RepoURL != "" && opts.SHA != "" {
-		return fmt.Sprintf("[`%s`](%s/blob/%s/%s)", displayPath, opts.RepoURL, opts.SHA, encodeURLPath(displayPath))
+		return fmt.Sprintf("[%s](%s/blob/%s/%s)", span, opts.RepoURL, opts.SHA, encodeURLPath(displayPath))
 	}
-	return fmt.Sprintf("`%s`", displayPath)
+	return span
+}
+
+// escapeTablePipes backslash-escapes '|' so a path can sit inside a
+// markdown table cell without ending it early. GitHub finds cell
+// boundaries by scanning a row's raw text for unescaped pipes before it
+// parses any inline markup, so this has to happen even for a pipe that
+// will end up inside a code span (issue #27).
+func escapeTablePipes(s string) string {
+	return strings.ReplaceAll(s, "|", "\\|")
+}
+
+// codeSpan wraps content in the narrowest backtick fence that can hold it
+// without the fence closing early on a backtick already in content: one
+// more backtick than content's longest backtick run, per CommonMark's code
+// span rule. A single space is added on each side when content starts or
+// ends with a backtick, so that backtick doesn't fuse with the fence into
+// one longer run -- CommonMark trims that padding back off when rendering
+// (issue #27).
+func codeSpan(content string) string {
+	longestRun, run := 0, 0
+	for _, r := range content {
+		if r == '`' {
+			run++
+			if run > longestRun {
+				longestRun = run
+			}
+		} else {
+			run = 0
+		}
+	}
+	fence := strings.Repeat("`", longestRun+1)
+	if strings.HasPrefix(content, "`") || strings.HasSuffix(content, "`") {
+		content = " " + content + " "
+	}
+	return fence + content + fence
 }
 
 func formatFooter() string {
