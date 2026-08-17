@@ -540,7 +540,11 @@ func formatUncoveredLines(lines []int, repoURL, sha, filePath string) string {
 
 	sort.Ints(lines)
 
+	// rangeSizes tracks the line count behind each entry in ranges, in the
+	// same order, so the truncation count below can be expressed in lines
+	// rather than ranges (issue #23).
 	var ranges []string
+	var rangeSizes []int
 	start := lines[0]
 	end := lines[0]
 
@@ -549,14 +553,21 @@ func formatUncoveredLines(lines []int, repoURL, sha, filePath string) string {
 			end = lines[i]
 		} else {
 			ranges = append(ranges, formatRange(start, end, repoURL, sha, filePath))
+			rangeSizes = append(rangeSizes, end-start+1)
 			start = lines[i]
 			end = lines[i]
 		}
 	}
 	ranges = append(ranges, formatRange(start, end, repoURL, sha, filePath))
+	rangeSizes = append(rangeSizes, end-start+1)
 
 	if len(ranges) > 5 {
-		return strings.Join(ranges[:5], ", ") + fmt.Sprintf(" +%d more", len(ranges)-5)
+		shown := 0
+		for _, n := range rangeSizes[:5] {
+			shown += n
+		}
+		hidden := len(lines) - shown
+		return strings.Join(ranges[:5], ", ") + fmt.Sprintf(" +%d more lines", hidden)
 	}
 	return strings.Join(ranges, ", ")
 }

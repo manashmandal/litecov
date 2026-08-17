@@ -595,6 +595,25 @@ func TestFormatUncoveredLines_TooMany(t *testing.T) {
 	}
 }
 
+func TestFormatUncoveredLines_TooMany_CountsHiddenLines(t *testing.T) {
+	// Issue #23: five single lines plus one 50-line range is 6 ranges
+	// total, so a count of hidden ranges says "+1 more" while the column
+	// is headed "Uncovered Lines" and 50 lines are actually hidden.
+	lines := []int{1, 3, 5, 7, 9}
+	for i := 100; i <= 149; i++ {
+		lines = append(lines, i)
+	}
+
+	result := formatUncoveredLines(lines, "", "", "")
+
+	if !strings.Contains(result, "+50 more lines") {
+		t.Errorf("expected the 50 hidden lines to be counted, got: %s", result)
+	}
+	if strings.Contains(result, "+1 more") {
+		t.Errorf("should not report the hidden range count instead of the hidden line count, got: %s", result)
+	}
+}
+
 func TestFormatUncoveredLines_Empty(t *testing.T) {
 	result := formatUncoveredLines(nil, "", "", "")
 	if result != "-" {
