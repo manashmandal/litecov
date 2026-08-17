@@ -2007,6 +2007,153 @@ func TestFormatCoverageDiffWithComparison_LongBranchNameWidensTheWholeBlock(t *t
 	}
 }
 
+// TestFormatCoverageDiffWithComparison_NoBranchDataOmitsRows pins down issue
+// #78's skip behavior: a report with no branch data on either side, which
+// is every report either parser produces today, must not render Branches
+// or Partials rows at all, matching how Codecov omits both for a language
+// or format that has nothing to report.
+func TestFormatCoverageDiffWithComparison_NoBranchDataOmitsRows(t *testing.T) {
+	comp := &coverage.Comparison{
+		Head: &coverage.Report{TotalCovered: 80, TotalLines: 100, Coverage: 80.0, Files: make([]coverage.FileCoverage, 5)},
+		Base: &coverage.Report{TotalCovered: 70, TotalLines: 100, Coverage: 70.0, Files: make([]coverage.FileCoverage, 5)},
+	}
+
+	result := formatCoverageDiffWithComparison(comp, Options{PRNumber: 1, BaseBranch: "main"})
+
+	if strings.Contains(result, "Branches") {
+		t.Error("a report with no branch data should not render a Branches row")
+	}
+	if strings.Contains(result, "Partials") {
+		t.Error("a report with no branch data should not render a Partials row")
+	}
+}
+
+// TestFormatCoverageDiffWithComparison_BranchesAndPartialsRendered
+// reproduces issue #78: the Coverage Diff block had no way to show Branches
+// or Partials at all, even for a report that carried the data, because
+// Report had no fields for them and the formatter had no rows for them.
+// Once a report does carry branch data, Branches renders in the totals
+// group with Files and Lines, and Partials renders in the outcome group
+// with Hits and Misses, matching Codecov's own layout (the numbers here are
+// the aio-libs/aiohttp#13430 example from the issue).
+func TestFormatCoverageDiffWithComparison_BranchesAndPartialsRendered(t *testing.T) {
+	comp := &coverage.Comparison{
+		Head: &coverage.Report{
+			TotalCovered: 48365,
+			TotalLines:   49703,
+			Coverage:     97.30,
+			Files:        make([]coverage.FileCoverage, 131),
+			Branches:     2618,
+			Partials:     231,
+		},
+		Base: &coverage.Report{
+			TotalCovered: 48960,
+			TotalLines:   49748,
+			Coverage:     98.41,
+			Files:        make([]coverage.FileCoverage, 133),
+			Branches:     2629,
+			Partials:     125,
+		},
+	}
+
+	result := formatCoverageDiffWithComparison(comp, Options{PRNumber: 13430, BaseBranch: "master"})
+	lines := diffBlockLines(result)
+
+	var rows []string
+	for _, l := range lines {
+		if strings.HasPrefix(l, "@@") || strings.HasPrefix(l, "##") || strings.HasPrefix(l, "=") {
+			continue
+		}
+		rows = append(rows, l)
+	}
+
+	if len(rows) != 7 {
+		t.Fatalf("expected 7 metric rows (Coverage, Files, Lines, Branches, Hits, Misses, Partials), got %d: %q", len(rows), rows)
+	}
+
+	width := len(rows[0])
+	for _, row := range rows {
+		if len(row) != width {
+			t.Errorf("row %q has length %d, want %d like every other row in the block", row, len(row), width)
+		}
+	}
+
+	linesIdx, branchesIdx, hitsIdx, partialsIdx := -1, -1, -1, -1
+	for i, row := range rows {
+		switch {
+		case strings.Contains(row, "Lines"):
+			linesIdx = i
+		case strings.Contains(row, "Branches"):
+			branchesIdx = i
+		case strings.Contains(row, "Hits"):
+			hitsIdx = i
+		case strings.Contains(row, "Partials"):
+			partialsIdx = i
+		}
+	}
+	if branchesIdx != linesIdx+1 {
+		t.Errorf("Branches should immediately follow Lines, got Lines at %d and Branches at %d: %q", linesIdx, branchesIdx, rows)
+	}
+	if partialsIdx != hitsIdx+2 {
+		t.Errorf("Partials should follow Hits and Misses, got Hits at %d and Partials at %d: %q", hitsIdx, partialsIdx, rows)
+	}
+
+	if !strings.Contains(rows[branchesIdx], "2629") || !strings.Contains(rows[branchesIdx], "2618") || !strings.Contains(rows[branchesIdx], "-11") {
+		t.Errorf("Branches row missing base/head/delta values: %q", rows[branchesIdx])
+	}
+	if !strings.Contains(rows[partialsIdx], "125") || !strings.Contains(rows[partialsIdx], "231") || !strings.Contains(rows[partialsIdx], "+106") {
+		t.Errorf("Partials row missing base/head/delta values: %q", rows[partialsIdx])
+	}
+	// Partials rose from 125 to 231, a regression, so the row gets the "-"
+	// (bad) prefix, the same convention Misses uses.
+	if !strings.HasPrefix(rows[partialsIdx], "- Partials") {
+		t.Errorf("an increase in partials should get the '-' prefix: %q", rows[partialsIdx])
+	}
+}
+
+// TestFormatCoverageDiffWithComparison_BranchDataNoBase confirms the
+// single-column path (no base report) also renders Branches and Partials
+// when the head report carries them, not just the three-column comparison
+// path above.
+func TestFormatCoverageDiffWithComparison_BranchDataNoBase(t *testing.T) {
+	comp := &coverage.Comparison{
+		Head: &coverage.Report{
+			TotalCovered: 80,
+			TotalLines:   100,
+			Coverage:     80.0,
+			Files:        make([]coverage.FileCoverage, 5),
+			Branches:     40,
+			Partials:     6,
+		},
+		Base: nil,
+	}
+
+	result := formatCoverageDiffWithComparison(comp, Options{})
+
+	var branchesLine, partialsLine string
+	for _, line := range strings.Split(result, "\n") {
+		switch {
+		case strings.Contains(line, "Branches"):
+			branchesLine = line
+		case strings.Contains(line, "Partials"):
+			partialsLine = line
+		}
+	}
+
+	if branchesLine == "" {
+		t.Fatal("missing Branches row when head report carries branch data with no base")
+	}
+	if !strings.Contains(branchesLine, "40") {
+		t.Errorf("Branches row missing value: %q", branchesLine)
+	}
+	if partialsLine == "" {
+		t.Fatal("missing Partials row when head report carries branch data with no base")
+	}
+	if !strings.Contains(partialsLine, "6") {
+		t.Errorf("Partials row missing value: %q", partialsLine)
+	}
+}
+
 func TestFormatImpactedFilesWithDelta(t *testing.T) {
 	fileChanges := []coverage.FileChange{
 		{Path: "improved.go", HeadCoverage: 94.20, BaseCoverage: 92.10, Delta: 2.10, IsNew: false},

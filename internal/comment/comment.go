@@ -215,11 +215,13 @@ func roundToDisplayPrecision(delta float64) float64 {
 }
 
 // diffLabelWidth is the width of a Coverage Diff/Summary row's label
-// column: a 1-character +/- prefix, a space, then the widest of the five
-// metric names ("Coverage") left-justified. The value columns that follow
-// can't be a constant like this one -- they have to size themselves to
-// whatever numbers a given report produced -- but the label set is fixed,
-// so its width is (issue #45).
+// column: a 1-character +/- prefix, a space, then the widest metric name
+// left-justified. "Coverage", "Branches" and "Partials" are tied at 8
+// characters, so anchoring this to "Coverage" still covers the label set
+// now that Branches/Partials can render too (issue #78). The value columns
+// that follow can't be a constant like this one -- they have to size
+// themselves to whatever numbers a given report produced -- but the label
+// set is fixed, so its width is (issue #45).
 const diffLabelWidth = len("Coverage") + 2
 
 // diffColumnWidth returns the width to give every numeric column in a
@@ -329,9 +331,25 @@ func formatCoverageDiffWithComparison(comp *coverage.Comparison, opts Options) s
 	headHits := fmt.Sprintf("%d", comp.Head.Hits())
 	headMisses := fmt.Sprintf("%d", comp.Head.Misses())
 
+	// hasBranchData decides whether the Branches and Partials rows render
+	// at all. Codecov omits both when the underlying language or report
+	// format carries no branch data instead of printing a row of zeroes,
+	// and neither the LCOV nor the Cobertura parser sets Report.Branches
+	// today (see its doc comment), so every report currently produced
+	// takes this path (issue #78).
+	hasBranchData := comp.Head.Branches != 0 || (hasBase && comp.Base.Branches != 0)
+	var headBranches, headPartials string
+	if hasBranchData {
+		headBranches = fmt.Sprintf("%d", comp.Head.Branches)
+		headPartials = fmt.Sprintf("%d", comp.Head.Partials)
+	}
+
 	var baseCoverage, baseFiles, baseLines, baseHits, baseMisses string
+	var baseBranches, basePartials string
 	var coverageDelta, filesDelta, linesDelta, hitsDelta, missesDelta string
+	var branchesDelta, partialsDelta string
 	coveragePrefix, hitsPrefix, missesPrefix := " ", " ", " "
+	partialsPrefix := " "
 
 	if hasBase {
 		baseCoverage = fmt.Sprintf("%.2f%%", comp.Base.Coverage)
@@ -357,6 +375,23 @@ func formatCoverageDiffWithComparison(comp *coverage.Comparison, opts Options) s
 		filesDelta = formatIntDelta(len(comp.Head.Files) - len(comp.Base.Files))
 		linesDelta = formatIntDelta(comp.Head.TotalLines - comp.Base.TotalLines)
 
+		if hasBranchData {
+			baseBranches = fmt.Sprintf("%d", comp.Base.Branches)
+			basePartials = fmt.Sprintf("%d", comp.Base.Partials)
+			branchesDelta = formatIntDelta(comp.Head.Branches - comp.Base.Branches)
+
+			// Fewer partials is an improvement, the same convention Misses
+			// uses below: a falling count gets the "+" (good) prefix, a
+			// rising one gets "-" (bad).
+			partialsDiff := comp.Head.Partials - comp.Base.Partials
+			if partialsDiff < 0 {
+				partialsPrefix = "+"
+			} else if partialsDiff > 0 {
+				partialsPrefix = "-"
+			}
+			partialsDelta = formatIntDelta(partialsDiff)
+		}
+
 		hitsDiff := comp.Head.Hits() - comp.Base.Hits()
 		if hitsDiff > 0 {
 			hitsPrefix = "+"
@@ -380,9 +415,9 @@ func formatCoverageDiffWithComparison(comp *coverage.Comparison, opts Options) s
 	// column together instead of leaving the rest on their old, narrower
 	// grid (issue #45).
 	colWidth := diffColumnWidth(
-		headCoverage, headFiles, headLines, headHits, headMisses,
-		baseCoverage, baseFiles, baseLines, baseHits, baseMisses,
-		coverageDelta, filesDelta, linesDelta, hitsDelta, missesDelta,
+		headCoverage, headFiles, headLines, headHits, headMisses, headBranches, headPartials,
+		baseCoverage, baseFiles, baseLines, baseHits, baseMisses, baseBranches, basePartials,
+		coverageDelta, filesDelta, linesDelta, hitsDelta, missesDelta, branchesDelta, partialsDelta,
 	)
 	valueCols := 1
 	if hasBase {
@@ -411,18 +446,30 @@ func formatCoverageDiffWithComparison(comp *coverage.Comparison, opts Options) s
 	if hasBase {
 		sb.WriteString(diffRow3(" ", "Files", colWidth, baseFiles, headFiles, filesDelta))
 		sb.WriteString(diffRow3(" ", "Lines", colWidth, baseLines, headLines, linesDelta))
+		if hasBranchData {
+			sb.WriteString(diffRow3(" ", "Branches", colWidth, baseBranches, headBranches, branchesDelta))
+		}
 	} else {
 		sb.WriteString(diffRow1("Files", colWidth, headFiles))
 		sb.WriteString(diffRow1("Lines", colWidth, headLines))
+		if hasBranchData {
+			sb.WriteString(diffRow1("Branches", colWidth, headBranches))
+		}
 	}
 	sb.WriteString(strings.Repeat("=", totalWidth) + "\n")
 
 	if hasBase {
 		sb.WriteString(diffRow3(hitsPrefix, "Hits", colWidth, baseHits, headHits, hitsDelta))
 		sb.WriteString(diffRow3(missesPrefix, "Misses", colWidth, baseMisses, headMisses, missesDelta))
+		if hasBranchData {
+			sb.WriteString(diffRow3(partialsPrefix, "Partials", colWidth, basePartials, headPartials, partialsDelta))
+		}
 	} else {
 		sb.WriteString(diffRow1("Hits", colWidth, headHits))
 		sb.WriteString(diffRow1("Misses", colWidth, headMisses))
+		if hasBranchData {
+			sb.WriteString(diffRow1("Partials", colWidth, headPartials))
+		}
 	}
 
 	sb.WriteString("```\n\n")

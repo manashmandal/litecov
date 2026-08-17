@@ -145,6 +145,37 @@ func TestReport_HitsAndMisses_Zero(t *testing.T) {
 	}
 }
 
+// TestReport_Misses_SubtractsPartials reproduces the Misses() half of issue
+// #78: a partially covered line is neither a clean hit nor a clean miss, so
+// once a report carries a nonzero Partials it must come out of the miss
+// count instead of padding it.
+func TestReport_Misses_SubtractsPartials(t *testing.T) {
+	report := &Report{
+		TotalCovered: 75,
+		TotalLines:   100,
+		Partials:     10,
+	}
+
+	if got := report.Misses(); got != 15 {
+		t.Errorf("Misses() = %v, want 15 (100 total - 75 covered - 10 partials)", got)
+	}
+}
+
+// TestReport_Misses_ZeroPartialsUnchanged pins down that Misses() is
+// unaffected by the issue #78 change when Partials is left at its zero
+// value, which is every report either parser produces today.
+func TestReport_Misses_ZeroPartialsUnchanged(t *testing.T) {
+	report := &Report{
+		TotalCovered: 75,
+		TotalLines:   100,
+		Partials:     0,
+	}
+
+	if got := report.Misses(); got != 25 {
+		t.Errorf("Misses() = %v, want 25", got)
+	}
+}
+
 func TestNewComparison_NilHead(t *testing.T) {
 	comp := NewComparison(nil, nil, nil, nil, nil)
 

@@ -30,6 +30,19 @@ type Report struct {
 	TotalCovered int
 	TotalLines   int
 	Coverage     float64
+	// Branches is the total number of conditional branches a report
+	// measured (an if/else arm, a switch case), and Partials is how many of
+	// those branches were only partly exercised: one arm taken, another
+	// not. Both are 0 for a report with no branch data, which is what lets
+	// the coverage diff skip the Branches/Partials rows entirely instead of
+	// printing a block of zeroes, matching how Codecov omits them for a
+	// language or format that has nothing to report (issue #78). Neither
+	// the LCOV nor the Cobertura parser sets these today: both fold a
+	// partially taken branch straight into a line miss instead of tracking
+	// a separate partial bucket (issues #63, #25), so every report either
+	// parser produces currently leaves this at 0.
+	Branches int
+	Partials int
 }
 
 func (r *Report) Calculate() {
@@ -50,8 +63,15 @@ func (r *Report) Hits() int {
 	return r.TotalCovered
 }
 
+// Misses subtracts Partials as well as TotalCovered: a partially covered
+// line -- some but not all of its branches taken -- is neither a clean hit
+// nor a clean miss, so once a report carries a nonzero Partials it has to
+// come out of the miss count instead of padding it (issue #78). Partials is
+// 0 for every report today (see its doc comment on Report), so this stays
+// identical to the plain subtraction it replaces until a parser starts
+// setting it.
 func (r *Report) Misses() int {
-	return r.TotalLines - r.TotalCovered
+	return r.TotalLines - r.TotalCovered - r.Partials
 }
 
 // Comparison holds the result of comparing head vs base coverage
