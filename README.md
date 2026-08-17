@@ -165,6 +165,8 @@ so it can diff them.
 | `show-files` | `changed` | Files to show (see below) |
 | `threshold` | `0` | Minimum coverage % to pass |
 | `patch-threshold` | `0` | Minimum patch coverage % to pass, independent of `threshold` |
+| `good-threshold` | `0` (uses 80) | Coverage % at/above which the report marks a file or the project as passing |
+| `warn-threshold` | `0` (uses 50) | Coverage % at/above which the report warns instead of failing |
 | `title` | `Coverage Report` | Comment header |
 | `annotations` | `false` | Output GitHub annotations for uncovered lines |
 | `base-coverage-file` | None | Path to a base branch coverage file, enables comparison mode |

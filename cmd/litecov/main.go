@@ -21,6 +21,8 @@ func main() {
 	showFiles := flag.String("show-files", "changed", "Files to show: all, changed, threshold:N, worst:N")
 	threshold := flag.Float64("threshold", 0, "Minimum coverage threshold for passing status")
 	patchThreshold := flag.Float64("patch-threshold", 0, "Minimum patch coverage threshold for passing status")
+	goodThreshold := flag.Float64("good-threshold", 0, "Coverage % at/above which the report shows a passing status (0 = default of 80)")
+	warnThreshold := flag.Float64("warn-threshold", 0, "Coverage % at/above which the report shows a warning instead of a failing status (0 = default of 50)")
 	title := flag.String("title", "Coverage Report", "Comment title")
 	annotations := flag.Bool("annotations", false, "Output GitHub annotations for uncovered lines")
 	baseCoverageFile := flag.String("base-coverage-file", "", "Path to base branch coverage file for comparison")
@@ -40,6 +42,8 @@ func main() {
 	if *pathFixesInput == "" {
 		*pathFixesInput = os.Getenv("INPUT_PATH_FIXES")
 	}
+	*goodThreshold = resolveThreshold(*goodThreshold, os.Getenv("INPUT_GOOD_THRESHOLD"))
+	*warnThreshold = resolveThreshold(*warnThreshold, os.Getenv("INPUT_WARN_THRESHOLD"))
 	pathFixRules := paths.ParsePathFixes(*pathFixesInput)
 
 	token := os.Getenv("GITHUB_TOKEN")
@@ -182,6 +186,8 @@ func main() {
 		BaseBranch:    *baseBranch,
 		PatchCoverage: coverage.CalculatePatchCoverage(report, patchedLines),
 		FilePatches:   coverage.CalculateFilePatchCoverage(report, patchedLines),
+		GoodThreshold: *goodThreshold,
+		WarnThreshold: *warnThreshold,
 	}
 	if baseErr != nil {
 		opts.BaseError = baseErr.Error()
@@ -304,6 +310,27 @@ func commitStatusForPatchCoverage(patch coverage.PatchCoverage, threshold float6
 		return "failure", fmt.Sprintf("%.2f%% patch coverage (minimum: %.2f%%)", pct, threshold)
 	}
 	return "success", fmt.Sprintf("%.2f%% patch coverage", pct)
+}
+
+// resolveThreshold decides the value for a good-threshold/warn-threshold
+// flag: flagValue as-is when it's already non-zero, otherwise inputEnvValue
+// (the matching INPUT_GOOD_THRESHOLD/INPUT_WARN_THRESHOLD action input)
+// parsed as a float. Both flags default to 0, "not configured," so this
+// only ever overrides that default -- it can't be told apart from a direct
+// invocation that explicitly passed 0, the same ambiguity *threshold and
+// *patchThreshold already live with. inputEnvValue that fails to parse
+// (empty, because the input wasn't set, or malformed) leaves flagValue
+// untouched rather than erroring, so a comment.Options field simply stays
+// at its own "not configured" default of 0 (issue #80).
+func resolveThreshold(flagValue float64, inputEnvValue string) float64 {
+	if flagValue != 0 {
+		return flagValue
+	}
+	val, err := strconv.ParseFloat(inputEnvValue, 64)
+	if err != nil {
+		return flagValue
+	}
+	return val
 }
 
 // resolveBaseBranch decides the base branch name shown in the diff header.

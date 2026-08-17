@@ -26,6 +26,14 @@ inputs:
     description: 'Minimum patch coverage threshold for passing status (0-100), independent of threshold'
     required: false
     default: '0'
+  good-threshold:
+    description: 'Coverage percentage at/above which a file or the project gets a passing status in the report (0 = default of 80). Independent of threshold, which only gates the commit status.'
+    required: false
+    default: '0'
+  warn-threshold:
+    description: 'Coverage percentage at/above which a file or the project gets a warning instead of a failing status in the report (0 = default of 50)'
+    required: false
+    default: '0'
   title:
     description: 'Comment title'
     required: false
@@ -72,6 +80,8 @@ runs:
     INPUT_SHOW_FILES: ${{ inputs.show-files }}
     INPUT_THRESHOLD: ${{ inputs.threshold }}
     INPUT_PATCH_THRESHOLD: ${{ inputs.patch-threshold }}
+    INPUT_GOOD_THRESHOLD: ${{ inputs.good-threshold }}
+    INPUT_WARN_THRESHOLD: ${{ inputs.warn-threshold }}
     INPUT_TITLE: ${{ inputs.title }}
     INPUT_ANNOTATIONS: ${{ inputs.annotations }}
     INPUT_BASE_COVERAGE_FILE: ${{ inputs.base-coverage-file }}

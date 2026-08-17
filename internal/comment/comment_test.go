@@ -506,6 +506,67 @@ func TestFormat_StatusEmoji_LowCoverage(t *testing.T) {
 	}
 }
 
+// TestFormat_StatusEmoji_ConfiguredThresholdDowngradesHighCoverage
+// reproduces issue #80's production repro: seven files between 88.00% and
+// 100.00% all rendered a checkmark because the cutoff was hardcoded at 80,
+// far below where the repo actually operates. A file at 88% must stop
+// getting a checkmark once GoodThreshold is configured above it, and start
+// getting one again once coverage clears the configured bar.
+func TestFormat_StatusEmoji_ConfiguredThresholdDowngradesHighCoverage(t *testing.T) {
+	report := &coverage.Report{
+		Files: []coverage.FileCoverage{
+			{Path: "client.go", LinesCovered: 88, LinesTotal: 100},
+		},
+		TotalCovered: 88,
+		TotalLines:   100,
+		Coverage:     88.0,
+	}
+
+	opts := Options{ShowFiles: "all", GoodThreshold: 95}
+	result := Format(report, opts)
+
+	// Checked against the headline specifically, not a bare substring
+	// search: formatFooter's legend (issue #79) always spells out all three
+	// glyphs as part of its own descriptive text, so "does \u2705 appear
+	// anywhere in the comment" is true regardless of any file's actual
+	// status.
+	if strings.Contains(result, "\u2705 Project coverage is") {
+		t.Error("88% coverage should not get a checkmark headline once GoodThreshold is 95")
+	}
+	if !strings.Contains(result, "\u26A0\uFE0F Project coverage is") {
+		t.Error("88% coverage should get a warning headline once GoodThreshold is 95")
+	}
+}
+
+// TestFormat_StatusEmoji_ConfiguredWarnThresholdDowngradesToFail
+// reproduces the other half of issue #80: a repo at 60% overall sees a
+// warning on almost every row because 50 sits far below where a strict
+// repo's floor actually is. A file must render a fail once its coverage
+// drops below a configured WarnThreshold, even though the same percentage
+// would earn a warning under the default cutoffs.
+func TestFormat_StatusEmoji_ConfiguredWarnThresholdDowngradesToFail(t *testing.T) {
+	report := &coverage.Report{
+		Files: []coverage.FileCoverage{
+			{Path: "flaky.go", LinesCovered: 60, LinesTotal: 100},
+		},
+		TotalCovered: 60,
+		TotalLines:   100,
+		Coverage:     60.0,
+	}
+
+	result := Format(report, Options{ShowFiles: "all", WarnThreshold: 70})
+
+	// Checked against the headline specifically; see the comment on
+	// TestFormat_StatusEmoji_ConfiguredThresholdDowngradesHighCoverage for
+	// why a bare substring search doesn't work here.
+	if strings.Contains(result, "\u26A0\uFE0F Project coverage is") {
+		t.Error("60% coverage should not get a warning headline once WarnThreshold is 70")
+	}
+	if !strings.Contains(result, "\u274C Project coverage is") {
+		t.Error("60% coverage should get a failing headline once WarnThreshold is 70")
+	}
+}
+
 func TestFormat_WithHyperlinks(t *testing.T) {
 	report := &coverage.Report{
 		Files: []coverage.FileCoverage{
@@ -722,10 +783,43 @@ func TestGetStatusEmoji(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		result := getStatusEmoji(tt.coverage)
+		result := getStatusEmoji(tt.coverage, Options{})
 		if result != tt.expected {
 			t.Errorf("getStatusEmoji(%.2f) = %s, expected %s", tt.coverage, result, tt.expected)
 		}
+	}
+}
+
+// TestGetStatusEmoji_ConfiguredThresholds guards issue #80: getStatusEmoji
+// used to ignore Options entirely and always apply the fixed 80/50 cutoffs,
+// so a repo that configured a stricter GoodThreshold still saw a checkmark
+// on every file above 80%. GoodThreshold and WarnThreshold must each move
+// the cutoff they name, and <=0 must fall back to the 80/50 default rather
+// than always failing or always passing.
+func TestGetStatusEmoji_ConfiguredThresholds(t *testing.T) {
+	tests := []struct {
+		name     string
+		coverage float64
+		opts     Options
+		expected string
+	}{
+		{"below a raised GoodThreshold gets warn, not pass", 80, Options{GoodThreshold: 95}, "⚠️"},
+		{"at a raised GoodThreshold passes", 95, Options{GoodThreshold: 95}, "✅"},
+		{"a lowered GoodThreshold passes coverage the default would only warn on", 60, Options{GoodThreshold: 55}, "✅"},
+		{"below a raised WarnThreshold fails instead of warning", 60, Options{WarnThreshold: 70}, "❌"},
+		{"at a raised WarnThreshold still warns", 70, Options{WarnThreshold: 70}, "⚠️"},
+		{"zero GoodThreshold is treated as unconfigured, default 80 applies", 85, Options{GoodThreshold: 0}, "✅"},
+		{"negative WarnThreshold is treated as unconfigured, default 50 applies", 10, Options{WarnThreshold: -5}, "❌"},
+		{"unrelated Threshold field (show-files filter) has no effect on the glyph", 40, Options{Threshold: 90}, "❌"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := getStatusEmoji(tt.coverage, tt.opts)
+			if result != tt.expected {
+				t.Errorf("getStatusEmoji(%.2f, %+v) = %s, want %s", tt.coverage, tt.opts, result, tt.expected)
+			}
+		})
 	}
 }
 
@@ -1443,7 +1537,7 @@ func TestCodeSpan(t *testing.T) {
 }
 
 func TestFormatFooter(t *testing.T) {
-	result := formatFooter()
+	result := formatFooter(Options{})
 
 	if !strings.Contains(result, "---") {
 		t.Error("missing horizontal rule")
@@ -1464,7 +1558,7 @@ func TestFormatFooter(t *testing.T) {
 // comment. Each case checks one piece of that definition actually landed,
 // not just that some new text showed up.
 func TestFormatFooter_Legend(t *testing.T) {
-	result := formatFooter()
+	result := formatFooter(Options{})
 
 	tests := []struct {
 		name string
@@ -1492,17 +1586,40 @@ func TestFormatFooter_Legend(t *testing.T) {
 // stated thresholds to what getStatusEmoji actually does at those exact
 // values, so the two can't silently drift apart (issue #79).
 func TestFormatFooter_CutoffsMatchGetStatusEmoji(t *testing.T) {
-	if got := getStatusEmoji(highCoverageThreshold); got != "✅" {
+	if got := getStatusEmoji(highCoverageThreshold, Options{}); got != "✅" {
 		t.Errorf("getStatusEmoji(highCoverageThreshold) = %s, want ✅", got)
 	}
-	if got := getStatusEmoji(highCoverageThreshold - 0.01); got == "✅" {
+	if got := getStatusEmoji(highCoverageThreshold-0.01, Options{}); got == "✅" {
 		t.Errorf("getStatusEmoji(highCoverageThreshold - 0.01) = %s, want something other than ✅", got)
 	}
-	if got := getStatusEmoji(mediumCoverageThreshold); got != "⚠️" {
+	if got := getStatusEmoji(mediumCoverageThreshold, Options{}); got != "⚠️" {
 		t.Errorf("getStatusEmoji(mediumCoverageThreshold) = %s, want ⚠️", got)
 	}
-	if got := getStatusEmoji(mediumCoverageThreshold - 0.01); got != "❌" {
+	if got := getStatusEmoji(mediumCoverageThreshold-0.01, Options{}); got != "❌" {
 		t.Errorf("getStatusEmoji(mediumCoverageThreshold - 0.01) = %s, want ❌", got)
+	}
+}
+
+// TestFormatFooter_LegendReflectsConfiguredThresholds extends issue #79's
+// drift guard to issue #80: the legend must restate whatever GoodThreshold
+// and WarnThreshold actually resolved to, not always the 80/50 default, or
+// a repo that configured stricter cutoffs would ship a comment whose
+// footer describes cutoffs the emoji above it no longer use.
+func TestFormatFooter_LegendReflectsConfiguredThresholds(t *testing.T) {
+	opts := Options{GoodThreshold: 95, WarnThreshold: 70}
+	result := formatFooter(opts)
+
+	if !strings.Contains(result, "✅ ≥ 95%") {
+		t.Errorf("formatFooter() legend missing configured pass cutoff, got:\n%s", result)
+	}
+	if !strings.Contains(result, "⚠️ ≥ 70%") {
+		t.Errorf("formatFooter() legend missing configured warn cutoff, got:\n%s", result)
+	}
+	if !strings.Contains(result, "❌ < 70%") {
+		t.Errorf("formatFooter() legend missing configured fail cutoff, got:\n%s", result)
+	}
+	if strings.Contains(result, "≥ 80%") || strings.Contains(result, "≥ 50%") {
+		t.Errorf("formatFooter() legend should not still show the unconfigured 80/50 default, got:\n%s", result)
 	}
 }
 

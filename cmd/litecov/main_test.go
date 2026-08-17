@@ -205,6 +205,52 @@ func TestResolveBaseBranch(t *testing.T) {
 	}
 }
 
+// TestResolveThreshold guards issue #80: good-threshold and warn-threshold
+// used to have no way to reach comment.Options at all, so
+// good-threshold: 95 in a workflow's `with:` block was silently ignored.
+func TestResolveThreshold(t *testing.T) {
+	tests := []struct {
+		name          string
+		flagValue     float64
+		inputEnvValue string
+		want          float64
+	}{
+		{
+			name:          "INPUT_ env var is used when the flag is unset",
+			flagValue:     0,
+			inputEnvValue: "95",
+			want:          95,
+		},
+		{
+			name:          "flag wins over the INPUT_ env var",
+			flagValue:     90,
+			inputEnvValue: "95",
+			want:          90,
+		},
+		{
+			name:          "neither set stays at 0, comment.Options' own default applies",
+			flagValue:     0,
+			inputEnvValue: "",
+			want:          0,
+		},
+		{
+			name:          "an unparseable INPUT_ env var is ignored, not an error",
+			flagValue:     0,
+			inputEnvValue: "not-a-number",
+			want:          0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resolveThreshold(tt.flagValue, tt.inputEnvValue)
+			if got != tt.want {
+				t.Errorf("resolveThreshold(%v, %q) = %v, want %v", tt.flagValue, tt.inputEnvValue, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestLoadBaseReport_NoReport(t *testing.T) {
 	// An empty path is the only case where (nil, nil) is correct: no base
 	// comparison was requested at all. Every other way loadBaseReport can
